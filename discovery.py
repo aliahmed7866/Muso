@@ -41,10 +41,35 @@ def is_blocked(db, title, artist):
     """, (feedback_key('artist', title, artist), feedback_key('song', title, artist))).fetchone()
 
 
-def already_owned(db, title, artist):
-    wanted = song_key(title, artist)
-    return any(song_key(row['title'], row['artist']) == wanted
-               for row in db.execute('SELECT title,artist FROM tracks'))
+def same_recording(db, metadata):
+    """Only merge near-identical durations with matching, version-aware credits."""
+    title = metadata.get('title') or ''
+    artist = metadata.get('artist') or ''
+    duration = float(metadata.get('duration') or 0)
+    if not title.strip() or not artist.strip() or duration < 30:
+        return None
+    if key(artist_name(artist)) in ('unknownartist', 'youtube', 'variousartists'):
+        return None
+
+    def identity(title, artist):
+        performer = re.sub(r'\s*(?:- Topic|VEVO)$', '', artist, flags=re.I).strip()
+        prefix = performer + ' - '
+        if title.casefold().startswith(prefix.casefold()):
+            title = title[len(prefix):]
+        title = re.sub(r'\s*[\[(](?:official audio|official music video|audio)[\])]\s*$', '', title, flags=re.I)
+        return key(title), key(performer)
+
+    wanted = identity(title, artist)
+    album = key(metadata.get('album') or '')
+    for row in db.execute("""
+        SELECT id,title,artist,album FROM tracks WHERE duration BETWEEN ? AND ?
+        ORDER BY created,id
+    """, (duration - 2, duration + 2)):
+        existing_album = key(row['album'])
+        if album and existing_album and album != existing_album:
+            continue
+        if identity(row['title'], row['artist']) == wanted:
+            return row
 
 
 def candidate(entry):
@@ -146,8 +171,9 @@ def run(store, day, manual=False):
                 if (day != date.today().isoformat()
                         or db.execute("SELECT 1 FROM jobs WHERE status='queued' LIMIT 1").fetchone()):
                     return 'yield'
-                if (db.execute('SELECT 1 FROM tracks WHERE source_url=?', (entry['url'],)).fetchone()
-                        or already_owned(db, title, performer)):
+                if store.saved_source(db, entry['url']) or same_recording(db, {
+                    'title': title, 'artist': performer, 'duration': entry['duration']
+                }):
                     continue
             folder = store.temp / ('discovery-' + hashlib.sha256(entry['url'].encode()).hexdigest()[:20])
             shutil.rmtree(folder, ignore_errors=True)

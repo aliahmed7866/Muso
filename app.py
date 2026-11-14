@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS jobs (
  title TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '', candidates TEXT NOT NULL DEFAULT '[]',
  selected_url TEXT, track_id TEXT, created REAL NOT NULL, updated REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created);
+CREATE INDEX IF NOT EXISTS jobs_source ON jobs(url,status);
+CREATE INDEX IF NOT EXISTS jobs_selected_source ON jobs(selected_url,status);
+CREATE INDEX IF NOT EXISTS tracks_duration ON tracks(duration);
+CREATE TABLE IF NOT EXISTS track_sources (
+ url TEXT PRIMARY KEY, track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS daily_discovery (
  day TEXT NOT NULL, track_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -69,6 +74,13 @@ class Store:
                                      ('bitrate', 'INTEGER NOT NULL DEFAULT 0')]:
                 if name not in columns:
                     db.execute(f'ALTER TABLE tracks ADD COLUMN {name} {definition}')
+            for column in ('url', 'selected_url'):
+                db.execute(f"""
+                    INSERT OR IGNORE INTO track_sources(url,track_id)
+                    SELECT j.{column},t.id FROM jobs j JOIN tracks t ON t.id=j.track_id
+                    WHERE j.status='done' AND j.{column} IS NOT NULL
+                    ORDER BY j.updated DESC
+                """)
         token_path = self.root / 'token'
         if not token_path.exists():
             try:
@@ -95,7 +107,35 @@ class Store:
         with self.db() as db:
             db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?', [*fields.values(), job_id])
 
-    def add_track(self, path, metadata, discovery_day=None, manual=False):
+    @staticmethod
+    def saved_source(db, url):
+        return db.execute("""
+            SELECT id,title FROM tracks WHERE source_url=?
+            UNION ALL
+            SELECT t.id,t.title FROM track_sources s JOIN tracks t ON t.id=s.track_id WHERE s.url=?
+            UNION ALL
+            SELECT t.id,t.title FROM tracks t JOIN jobs j ON t.id=j.track_id
+            WHERE j.status='done' AND (j.url=? OR j.selected_url=?)
+            LIMIT 1
+        """, (url, url, url, url)).fetchone()
+
+    @staticmethod
+    def remember_sources(db, track_id, *urls):
+        db.executemany('INSERT OR IGNORE INTO track_sources VALUES (?,?)',
+                       [(url, track_id) for url in set(urls) if url])
+
+    def finish_import(self, job, track_id, already_saved=False):
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            track = db.execute('SELECT title FROM tracks WHERE id=?', (track_id,)).fetchone()
+            if track is None:
+                raise importer.ImportFailure('The saved track was removed. Retry the import.')
+            self.remember_sources(db, track_id, job['url'], job['selected_url'])
+            db.execute("UPDATE jobs SET status='done', track_id=?, title=?, message=?, updated=? WHERE id=?",
+                       (track_id, track['title'], 'Already in your library' if already_saved else
+                        'Ready to play offline', time.time(), job['id']))
+
+    def add_track(self, path, metadata, discovery_day=None, manual=False, *, result=None):
         path = Path(path)
         digest = hashlib.sha256()
         with path.open('rb') as f:
@@ -109,13 +149,20 @@ class Store:
                 status = self.discovery_status(db)
                 if discovery_day != date.today().isoformat() or not self.can_discover(status, manual):
                     return None
-            existing = db.execute('SELECT id FROM tracks WHERE fingerprint=? OR source_url=?', (fingerprint, source_url)).fetchone()
+            existing = self.saved_source(db, source_url) if source_url else None
+            if not existing:
+                existing = db.execute('SELECT id FROM tracks WHERE fingerprint=?', (fingerprint,)).fetchone()
+            if not existing:
+                existing = discovery.same_recording(db, metadata)
             if existing:
+                self.remember_sources(db, existing['id'], source_url)
+                if result is not None:
+                    result['duplicate'] = True
                 path.unlink(missing_ok=True)
                 return None if discovery_day else existing['id']
             if discovery_day:
                 title, artist = metadata['title'], metadata['artist']
-                if discovery.is_blocked(db, title, artist) or discovery.already_owned(db, title, artist):
+                if discovery.is_blocked(db, title, artist):
                     return None
             track_id = uuid.uuid4().hex
             filename = track_id + path.suffix.lower()
@@ -145,6 +192,11 @@ class Store:
             db.execute("UPDATE jobs SET status='working',message='Connecting to source…',updated=? WHERE id=?", (time.time(), job['id']))
         folder = self.temp / job['id']
         try:
+            with self.db() as db:
+                existing = self.saved_source(db, job['selected_url'] or job['url'])
+            if existing:
+                self.finish_import(job, existing['id'], already_saved=True)
+                return True
             if job['provider'] == 'spotify' and not job['selected_url']:
                 title = importer.spotify_title(job['url'])
                 self.update_job(job['id'], title=title, message='Finding versions on YouTube…')
@@ -157,9 +209,11 @@ class Store:
                 self.update_job(job['id'], status='needs_match', candidates=json.dumps(matches), message=message)
             else:
                 self.update_job(job['id'], message='Saving audio to your phone…')
+                shutil.rmtree(folder, ignore_errors=True)
                 path, metadata = importer.download(job['selected_url'] or job['url'], folder)
-                track_id = self.add_track(path, metadata)
-                self.update_job(job['id'], status='done', track_id=track_id, title=metadata['title'], message='Ready to play offline')
+                result = {}
+                track_id = self.add_track(path, metadata, result=result)
+                self.finish_import(job, track_id, already_saved=result.get('duplicate', False))
         except Exception as exc:
             self.update_job(job['id'], status='failed', message=str(exc)[:700])
         finally:
@@ -476,10 +530,12 @@ def create_app(data_dir=None):
             metadata = dict(title=(tags.get('title') or [Path(upload.filename).stem])[0], artist=(tags.get('artist') or ['Unknown artist'])[0], album=(tags.get('album') or [''])[0], duration=audio_file.info.length, source='local')
             metadata.update(genre=(tags.get('genre') or [''])[0], codec=ext.lstrip('.'),
                             bitrate=round((getattr(audio_file.info, 'bitrate', 0) or 0) / 1000))
-            track_id = store.add_track(path, metadata)
+            result = {}
+            track_id = store.add_track(path, metadata, result=result)
         finally:
             path.unlink(missing_ok=True)
-        return jsonify(id=track_id), 201
+        duplicate = result.get('duplicate', False)
+        return jsonify(id=track_id, duplicate=duplicate), 200 if duplicate else 201
 
     @app.post('/api/playlists')
     def create_playlist():
@@ -525,12 +581,15 @@ def create_app(data_dir=None):
         provider, url = importer.normalize_link(text_field(body(), 'url', 2000))
         with store.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            existing = db.execute("SELECT id FROM jobs WHERE url=? AND status IN ('queued','working','needs_match')", (url,)).fetchone()
-            if existing:
-                return jsonify(id=existing['id']), 200
-            track = db.execute('SELECT id FROM tracks WHERE source_url=?', (url,)).fetchone()
+            track = store.saved_source(db, url)
             if track:
                 return jsonify(track_id=track['id'], message='Already in your library'), 200
+            existing = db.execute("""
+                SELECT id FROM jobs WHERE (url=? OR selected_url=?)
+                AND status IN ('queued','working','needs_match') ORDER BY created LIMIT 1
+            """, (url, url)).fetchone()
+            if existing:
+                return jsonify(id=existing['id'], message='This import is already queued or in progress'), 200
             job_id = uuid.uuid4().hex
             db.execute('INSERT INTO jobs (id,url,provider,status,created,updated) VALUES (?,?,?,?,?,?)', (job_id, url, provider, 'queued', time.time(), time.time()))
         return jsonify(id=job_id), 202
@@ -549,6 +608,17 @@ def create_app(data_dir=None):
         if provider != 'youtube':
             abort(400, 'Choose a YouTube recording.')
         with store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            job = db.execute("SELECT url FROM jobs WHERE id=? AND status='needs_match'", (job_id,)).fetchone()
+            if not job:
+                abort(409, 'This import is not waiting for a match.')
+            existing = store.saved_source(db, url)
+            if existing:
+                store.remember_sources(db, existing['id'], job['url'], url)
+                db.execute("""
+                    UPDATE jobs SET selected_url=?,status='done',track_id=?,title=?,message=?,updated=? WHERE id=?
+                """, (url, existing['id'], existing['title'], 'Already in your library', time.time(), job_id))
+                return jsonify(ok=True, track_id=existing['id'], message='Already in your library')
             result = db.execute("UPDATE jobs SET selected_url=?,status='queued',updated=? WHERE id=? AND status='needs_match'", (url, time.time(), job_id))
             if not result.rowcount:
                 abort(409, 'This import is not waiting for a match.')

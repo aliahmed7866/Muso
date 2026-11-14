@@ -561,17 +561,22 @@ function addMusic() {
     const files = [...upload.files];
     upload.disabled = true;
     let saved = 0;
+    let skipped = 0;
     const failures = [];
     for (const file of files) {
       status.textContent = 'Importing ' + file.name + '…';
       const data = new FormData();
       data.append('file', file);
-      try { await api('upload', 'POST', data); saved++; }
+      try {
+        const result = await api('upload', 'POST', data);
+        if (result.duplicate) skipped++;
+        else saved++;
+      }
       catch (error) { failures.push(file.name + ': ' + error.message); }
     }
     upload.disabled = false;
     upload.value = '';
-    status.textContent = saved + ' imported. ' + failures.join(' ');
+    status.textContent = saved + ' imported. ' + (skipped ? skipped + ' already in your library. ' : '') + failures.join(' ');
     try { await refresh(); } catch (error) { toast(error.message); }
   };
   label.append(upload);
