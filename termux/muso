@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python="$repo/.venv/bin/python"
+export MUSO_DATA_DIR="${MUSO_DATA_DIR:-$HOME/.local/share/muso}"
+export MUSO_PORT="${MUSO_PORT:-8765}"
+url="http://127.0.0.1:$MUSO_PORT"
+mkdir -p "$MUSO_DATA_DIR"
+running() {
+  curl --max-time 1 -fsS "$url/api/health" 2>/dev/null | grep -q '"app":"Muso"'
+}
+start() {
+  if running; then return; fi
+  nohup "$python" "$repo/app.py" >>"$MUSO_DATA_DIR/server.log" 2>&1 </dev/null &
+  for ((i=0; i<30; i++)); do
+    if running; then return; fi
+    sleep .25
+  done
+  printf 'Muso did not start. Check %s/server.log\n' "$MUSO_DATA_DIR" >&2
+  return 1
+}
+case "${1:-open}" in
+  serve) exec "$python" "$repo/app.py" ;;
+  start) start; printf '%s\n' "$url" ;;
+  open) start; termux-open-url "$url" ;;
+  status) running && printf 'Running at %s\n' "$url" || { printf 'Muso is stopped\n'; exit 1; } ;;
+  share)
+    [[ $# -ge 2 ]] || { printf 'Share a song URL with Muso.\n' >&2; exit 2; }
+    # Validate the shared text before starting the server.
+    "$python" -c 'import sys; sys.path.insert(0,sys.argv[1]); from importer import normalize_link,ImportFailure
+try: normalize_link(sys.argv[2])
+except ValueError as exc: sys.exit(str(exc))' "$repo" "$2"
+    start
+    "$python" -c 'import json,os,sys,urllib.request,urllib.error
+from pathlib import Path
+token=(Path(os.environ["MUSO_DATA_DIR"])/"token").read_text().strip()
+request=urllib.request.Request(sys.argv[1]+"/api/import",data=json.dumps({"url":sys.argv[2]}).encode(),headers={"Content-Type":"application/json","X-Muso-Token":token})
+try:
+    with urllib.request.urlopen(request,timeout=8) as response: print(json.load(response).get("message","Import queued"))
+except urllib.error.HTTPError as exc: sys.exit(json.load(exc).get("error","Import failed"))' "$url" "$2"
+    termux-open-url "$url/?imports=1"
+    ;;
+  *) printf 'Usage: muso [open|start|serve|status|share URL]\n' >&2; exit 2 ;;
+esac
