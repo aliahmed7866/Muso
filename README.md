@@ -12,7 +12,7 @@ bash termux/install.sh
 ~/bin/muso open
 ```
 
-The player opens at [127.0.0.1:8765](http://127.0.0.1:8765). Tap **Install app**, or open Chrome's menu and choose **Install app** or **Add to Home screen**. Open Muso from its icon in a standalone window. Keep Termux running during playback and imports. If Android stops Termux, run `~/bin/muso start` before opening the icon again.
+The player opens at [127.0.0.1:8765](http://127.0.0.1:8765). Tap **Install app**, or open Chrome's menu and choose **Install app** or **Add to Home screen**. Open Muso from its icon in a standalone window. Muso automatically restarts its server after an exit while Termux is running, and the reconnect page retries every four seconds. If Android stops all of Termux, reopen Termux and run `~/bin/muso start`. Android battery settings can allow Termux to run in the background. A wake lock (`termux-wake-lock`) can help during screen-off playback and uses more battery. Release it with `termux-wake-unlock`.
 
 ## Discover music on demand
 

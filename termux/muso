@@ -11,7 +11,7 @@ running() {
 }
 start() {
   if running; then return; fi
-  nohup "$python" "$repo/app.py" >>"$MUSO_DATA_DIR/server.log" 2>&1 </dev/null &
+  nohup "$python" "$repo/termux/supervise.py" >>"$MUSO_DATA_DIR/server.log" 2>&1 </dev/null &
   for ((i=0; i<30; i++)); do
     if running; then return; fi
     sleep .25
