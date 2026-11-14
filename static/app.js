@@ -13,6 +13,8 @@ let activeMix = '', selecting = false, selected = new Set(), queueUndo = null;
 let sortOrder = 'default', resumeAt = null, lastSavedAt = 0;
 let playedSeconds = 0, lastAudioTime = 0;
 let browseBy = 'songs', browseGroup = '';
+let libraryReady = false;
+let initializing;
 const recapMonth = new Date();
 recapMonth.setDate(1);
 const playbackKey = 'muso.playback.v1';
@@ -115,7 +117,8 @@ $('refresh-library').addEventListener('click', async () => {
   const control = $('refresh-library');
   control.disabled = true;
   try {
-    await refresh();
+    if (libraryReady) await refresh();
+    else await initializeLibrary();
     await poll();
     toast('Library refreshed');
   } catch (error) {
@@ -139,6 +142,24 @@ async function refresh() {
   selected = new Set([...selected].filter(trackById));
   render();
   player();
+}
+
+function initializeLibrary() {
+  if (libraryReady) return Promise.resolve();
+  if (!initializing) {
+    $('status').textContent = 'Connecting to Muso…';
+    initializing = refresh().then(() => {
+      restorePlayback();
+      restoreSleep();
+      resumeAfterReload();
+      libraryReady = true;
+      $('status').textContent = '● On this device';
+    }).catch(error => {
+      $('status').textContent = 'Waiting for Muso · check Termux';
+      throw error;
+    }).finally(() => { initializing = null; });
+  }
+  return initializing;
 }
 
 function navigate(next) {
@@ -1166,14 +1187,11 @@ function resumeAfterReload() {
 const launch = new URLSearchParams(location.search);
 if (launch.has('imports')) view = 'imports';
 else if (launch.has('discover')) view = 'discover';
-refresh().then(() => {
-  restorePlayback();
-  restoreSleep();
-  resumeAfterReload();
-  return poll();
-}).catch(error => toast(error.message));
+initializeLibrary().then(poll).catch(error => toast(error.message));
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') checkSleep();
+  if (document.visibilityState !== 'visible') return;
+  checkSleep();
+  if (!libraryReady) initializeLibrary().then(poll).catch(() => {});
 });
 window.addEventListener('pagehide', () => {
   if (current || queue.length) savePlayback();
@@ -1188,11 +1206,11 @@ window.addEventListener('pagehide', () => {
 setInterval(() => {
   if (document.visibilityState === 'visible') {
     checkSleep();
-    poll().catch(() => {});
+    initializeLibrary().then(poll).catch(() => {});
   }
 }, 3500);
 setInterval(async () => {
-  if (document.visibilityState !== 'visible') return;
+  if (!libraryReady || document.visibilityState !== 'visible') return;
   try {
     const status = await api('discovery');
     if (JSON.stringify(status) !== JSON.stringify(daily)) {

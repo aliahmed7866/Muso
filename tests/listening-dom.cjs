@@ -30,7 +30,13 @@ async function until(predicate) {
     dom = new JSDOM(html, {url, runScripts: 'outside-only'});
     const w = dom.window, d = w.document;
     w.AbortController = AbortController;
-    w.fetch = (endpoint, options) => fetch(new URL(endpoint, url), options);
+    let startupReads = 0;
+    w.fetch = (endpoint, options) => {
+      if (endpoint === '/api/library' && ++startupReads <= 3) {
+        return Promise.reject(new TypeError('Server is down'));
+      }
+      return fetch(new URL(endpoint, url), options);
+    };
     w.matchMedia = () => ({matches: false});
     w.confirm = () => true;
     const dialog = d.getElementById('dialog');
@@ -60,7 +66,14 @@ async function until(predicate) {
       input.dispatchEvent(new w.Event('change'));
     };
     const titles = () => [...d.querySelectorAll('.track .song strong')].map(el => el.textContent);
+    await until(() => d.getElementById('status').textContent.includes('Waiting for Muso'));
+    assert.equal(titles().length, 0);
+    // Returning to an already-open page retries the initial library load.
+    Object.defineProperty(d, 'visibilityState', {value: 'visible', configurable: true});
+    d.dispatchEvent(new w.Event('visibilitychange'));
     await until(() => titles().length === 4);
+    assert.equal(startupReads, 4);
+    delete d.visibilityState;
     for (const [mix, expected] of [
       ['Your favourites', ['Amber', 'Coral']], ['First listen', ['Blue', 'Dawn']],
       ['Rediscover', ['Amber']], ['Fresh arrivals', ['Blue', 'Dawn']]
