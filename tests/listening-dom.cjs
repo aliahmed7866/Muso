@@ -43,7 +43,7 @@ async function until(predicate) {
     audio.play = async () => { paused = false; audio.dispatchEvent(new w.Event('play')); };
     audio.pause = () => { paused = true; audio.dispatchEvent(new w.Event('pause')); };
     audio.load = () => {};
-    w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep}; window.testNetwork = {api, searchInto};');
+    w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep, resumeAfterReload}; window.testNetwork = {api, searchInto};');
     const saved = () => JSON.parse(w.localStorage.getItem('muso.playback.v1'));
     const library = async () => (await fetch(url + '/api/library')).json();
     const click = async (name, root = d) => {
@@ -89,6 +89,24 @@ async function until(predicate) {
     d.querySelector('input[type=search]').dispatchEvent(new w.Event('input'));
     await click('Play all');
     assert.equal(paused, false);
+    const playingSource = audio.src;
+    audio.currentTime = 12;
+    await click('Refresh');
+    await until(() => !d.getElementById('refresh-library').disabled);
+    assert.equal(audio.src, playingSource);
+    assert.equal(audio.currentTime, 12);
+    assert.equal(paused, false);
+    w.performance.getEntriesByType = () => [{type: 'reload'}];
+    w.dispatchEvent(new w.Event('pagehide'));
+    audio.pause();
+    w.testSleep.resumeAfterReload();
+    assert.equal(paused, false);
+    audio.pause();
+    w.dispatchEvent(new w.Event('pagehide'));
+    w.testSleep.resumeAfterReload();
+    assert.equal(paused, true);
+    await audio.play();
+
     assert.equal(d.querySelectorAll('.track.playing').length, 1);
     const original = saved().queue;
     d.getElementById('queue').click();

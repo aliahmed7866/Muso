@@ -111,6 +111,20 @@ function form(label, placeholder, submit, action, value = '') {
   return wrapper;
 }
 
+$('refresh-library').addEventListener('click', async () => {
+  const control = $('refresh-library');
+  control.disabled = true;
+  try {
+    await refresh();
+    await poll();
+    toast('Library refreshed');
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    control.disabled = false;
+  }
+});
+
 async function refresh() {
   ({tracks, playlists, discovery: daily} = await api('library'));
   if (current && !trackById(current)) {
@@ -1136,12 +1150,26 @@ if ('mediaSession' in navigator) {
   }
 }
 
+function resumeAfterReload() {
+  let intent;
+  try {
+    intent = JSON.parse(sessionStorage.getItem('muso.reloadPlayback'));
+    sessionStorage.removeItem('muso.reloadPlayback');
+  } catch { return; }
+  if (!intent || !current || intent.track !== current || intent.sleepUntil && intent.sleepUntil <= Date.now()) return;
+  if (performance.getEntriesByType('navigation')[0]?.type !== 'reload') return;
+  audio.play().catch(error => {
+    if (error.name === 'NotAllowedError') toast('Tap Play to resume where you left off.');
+  });
+}
+
 const launch = new URLSearchParams(location.search);
 if (launch.has('imports')) view = 'imports';
 else if (launch.has('discover')) view = 'discover';
 refresh().then(() => {
   restorePlayback();
   restoreSleep();
+  resumeAfterReload();
   return poll();
 }).catch(error => toast(error.message));
 document.addEventListener('visibilitychange', () => {
@@ -1149,6 +1177,13 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => {
   if (current || queue.length) savePlayback();
+  try {
+    if (current && !audio.paused && !audio.ended) {
+      sessionStorage.setItem('muso.reloadPlayback', JSON.stringify({track: current, sleepUntil}));
+    } else {
+      sessionStorage.removeItem('muso.reloadPlayback');
+    }
+  } catch { /* The saved queue remains available when session storage is disabled. */ }
 });
 setInterval(() => {
   if (document.visibilityState === 'visible') {
