@@ -13,7 +13,8 @@ let activeMix = '', selecting = false, selected = new Set(), queueUndo = null;
 let sortOrder = 'default', resumeAt = null, lastSavedAt = 0;
 let playedSeconds = 0, lastAudioTime = 0;
 let browseBy = 'songs', browseGroup = '';
-let libraryReady = false;
+let libraryReady = false, discoveryPolling = false;
+let disconnectedSince = 0;
 let initializing;
 const recapMonth = new Date();
 recapMonth.setDate(1);
@@ -69,10 +70,12 @@ async function api(path, method = 'GET', data) {
         await new Promise(resolve => setTimeout(resolve, 750 * (attempt + 1)));
         continue;
       }
-      $('status').textContent = 'Muso disconnected · check Termux';
+      disconnectedSince ||= Date.now();
+      $('status').textContent = Date.now() - disconnectedSince < 60000
+        ? 'Reconnecting to Muso…' : 'Open Termux to reconnect · your queue is saved';
       throw new Error(error.name === 'AbortError'
-        ? 'Muso took too long to respond. Check Termux is running, then retry.'
-        : 'Cannot reach Muso on this phone. Open Termux and run ~/bin/muso start, then retry.');
+        ? 'Muso is taking longer to respond. Reconnecting automatically…'
+        : 'Reconnecting to Muso automatically. If this continues, open Termux; your queue is saved.');
     } finally { clearTimeout(timeout); }
     if (!response.ok) throw new Error(response.status === 404 && path === 'search/tasks'
       ? 'Restart Muso in Termux to load the updated search, then reload this page.'
@@ -155,7 +158,7 @@ function initializeLibrary() {
       libraryReady = true;
       $('status').textContent = '● On this device';
     }).catch(error => {
-      $('status').textContent = 'Waiting for Muso · check Termux';
+      $('status').textContent = 'Waiting for Muso · reconnecting automatically';
       throw error;
     }).finally(() => { initializing = null; });
   }
@@ -858,6 +861,7 @@ async function poll() {
     const newTrack = jobs.some(job => job.status === 'done' && job.track_id && !trackById(job.track_id));
     if (newTrack && changed) await refresh();
     if (view === 'imports' && changed) renderJobs();
+    disconnectedSince = 0;
     const pending = jobs.filter(job => ['queued','working','needs_match'].includes(job.status)).length;
     $('status').textContent = pending ? pending + ' pending · Imports' : '● On this device';
   } finally { importing = false; }
@@ -1191,7 +1195,7 @@ initializeLibrary().then(poll).catch(error => toast(error.message));
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   checkSleep();
-  if (!libraryReady) initializeLibrary().then(poll).catch(() => {});
+  initializeLibrary().then(poll).catch(() => {});
 });
 window.addEventListener('pagehide', () => {
   if (current || queue.length) savePlayback();
@@ -1210,7 +1214,8 @@ setInterval(() => {
   }
 }, 3500);
 setInterval(async () => {
-  if (!libraryReady || document.visibilityState !== 'visible') return;
+  if (!libraryReady || discoveryPolling || document.visibilityState !== 'visible') return;
+  discoveryPolling = true;
   try {
     const status = await api('discovery');
     if (JSON.stringify(status) !== JSON.stringify(daily)) {
@@ -1222,6 +1227,7 @@ setInterval(async () => {
       }
     }
   } catch { /* A stopped server will be checked again on the next tick. */ }
+  finally { discoveryPolling = false; }
 }, 5000);
 
 let installPrompt;

@@ -205,11 +205,11 @@ async function until(predicate) {
     };
     assert.equal((await w.testNetwork.api('network-test')).ok, true);
     assert.equal(reads, 3);
-    await assert.rejects(w.testNetwork.api('discovery/run', 'POST'), /Cannot reach Muso.*Termux/);
+    await assert.rejects(w.testNetwork.api('discovery/run', 'POST'), /Reconnecting to Muso automatically.*Termux/);
     assert.equal(writes, 1);
     d.querySelector('[data-view=discover]').click();
     await click('Discover Now');
-    assert.ok(d.getElementById('body').textContent.includes('Cannot reach Muso'));
+    assert.ok(d.getElementById('body').textContent.includes('Reconnecting to Muso automatically'));
     assert.equal([...d.querySelectorAll('button')].find(b => b.textContent === 'Discover Now').disabled, false);
     assert.equal(writes, 2);
     // Short polling recovers a dropped read and renders a completed background search.

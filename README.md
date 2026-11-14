@@ -12,7 +12,35 @@ bash termux/install.sh
 ~/bin/muso open
 ```
 
-The player opens at [127.0.0.1:8765](http://127.0.0.1:8765). Tap **Install app**, or open Chrome's menu and choose **Install app** or **Add to Home screen**. Open Muso from its icon in a standalone window. Muso automatically restarts its server after an exit while Termux is running, and the reconnect page checks server health and reopens the library when Muso responds. If Android stops all of Termux, reopen Termux and run `~/bin/muso start`. Android battery settings can allow Termux to run in the background. A wake lock (`termux-wake-lock`) can help during screen-off playback and uses more battery. Release it with `termux-wake-unlock`.
+The player opens at [127.0.0.1:8765](http://127.0.0.1:8765). Tap **Install app**, or open Chrome's menu and choose **Install app** or **Add to Home screen**. Open Muso from its icon in a standalone window.
+
+### Apply automatic recovery to an existing install
+
+Run this once in Termux:
+
+```bash
+cd ~/Muso && git pull --ff-only && bash termux/service.sh install
+```
+
+The installer registers Muso with `termux-services` (runit), starts it now, and adds startup hooks for new Termux login shells and Termux:Boot. It migrates this checkout's old background launches and leaves other apps' processes, ports, services, boot hooks and data alone. It preserves your configured `MUSO_PORT` and `MUSO_DATA_DIR` in the service configuration; supply those variables during installation if you use custom values. Fresh installs set this up automatically.
+
+- If Muso's server exits, its supervisor restarts it. If the supervisor exits, runit restarts that too.
+- The watchdog checks local HTTP health every five seconds after a 30-second startup grace period. Three consecutive failures restart only Muso's child server. It also checks a server left alive by a killed supervisor.
+- Opening a new Termux login shell starts the enabled service without typing a command. The player retries its connection and retains its queue.
+- For automatic startup after a phone reboot, install **Termux:Boot from the same source/signing family as Termux**, then open Termux:Boot once. Muso's boot script is installed already.
+- Set Android **Settings → Apps → Termux → Battery → Unrestricted** (wording varies by phone), and remove Termux from sleeping/deep-sleeping app lists. Muso acquires a Termux wake lock for screen-off operation; this uses additional battery. It does not release Termux's shared wake lock on stop because another app may need it. Release it manually with `termux-wake-unlock` when appropriate.
+
+Android can still force-stop all of Termux. A browser cannot launch a dead Termux process itself; reopen Termux in that case. Automatic recovery operates while Termux's service manager can run. The script cannot change Android battery permissions or install/open the Termux:Boot Android app for you.
+
+```bash
+~/bin/muso status   # service state and HTTP readiness
+~/bin/muso restart  # reload updated Python code
+~/bin/muso stop     # stays stopped across new shells and phone reboots
+~/bin/muso start    # re-enable and start
+~/bin/muso enable   # install/repair automatic recovery
+```
+
+Diagnostics remain in `~/.local/share/muso/server.log` (or your custom data directory). The installer never restarts the shared Termux service daemon or uses broad process-killing commands.
 
 ## Discover music on demand
 
@@ -20,7 +48,7 @@ Tap **Discover → Discover Now** or run `~/bin/muso discover`. Each request sea
 
 Use **Find music like this** from a song menu to start discovery around that track. General discovery favours liked and played music and looks for different performers before falling back to more tracks from a familiar artist. Use the skip options on Daily Finds to exclude songs or artists from future batches.
 
-Song searches run as background jobs so the browser only makes short requests for their results. A dropped status request is retried automatically. **Retry search** reuses a matching search while it is still running. Search errors stay visible, and Discover Now shows the source error when a batch fails. If Muso cannot be reached, open Termux and run `~/bin/muso start`. After updating Python code, stop the existing Muso server and start it again; refreshing the page alone does not reload the backend.
+Song searches run as background jobs so the browser only makes short requests for their results. A dropped status request is retried automatically. **Retry search** reuses a matching search while it is still running. Search errors stay visible, and Discover Now shows the source error when a batch fails. If Muso cannot be reached, it retries automatically. If Android stopped Termux, reopen Termux. After updating Python code, use `~/bin/muso restart`; refreshing the page alone does not reload the backend.
 
 Browse the library by artist, album, or genre. Muso uses available tags, and you can fill in missing album or genre details from the song menu. New online imports select yt-dlp's best available audio stream and preserve it without re-encoding. If the source offers only combined video and audio, FFmpeg copies the audio stream into a playable container. The song menu shows the reported format and bitrate when available.
 
@@ -74,10 +102,12 @@ The regression checks use a temporary library and generated silent audio. They d
 
 ```bash
 npm install --no-save jsdom playwright
-python -m unittest discover -s tests -p test_search.py
+python -m unittest discover -s tests -p 'test_*.py'
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening-dom.cjs
 npx playwright install chromium
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening.cjs
 ```
 
 The DOM check exercises mixes, selection across filters, playlist membership, queue editing and saving, shuffle, sleep timer state and repeat precedence, and concurrent playlist edit conflicts against real Flask endpoints. It simulates audio and dialog APIs. The browser check additionally covers actual playback, page reload, and phone/desktop overflow. Set `MUSO_TEST_CHROMIUM` to use an existing Chromium executable, or `MUSO_TEST_SCREENSHOT` to save a phone screenshot.
+
+The supervisor checks exercise real child crashes, replacement supervisors, hung-child recovery, and exact checkout/library targeting. To exercise installation, startup hooks, deliberate stop, and recovery under real runit in an isolated temporary prefix, set `MUSO_TEST_RUNIT_BIN` to a directory containing `sv`, `runsv`, and `runsvdir` when running the Python tests. These checks do not alter a real Termux prefix.

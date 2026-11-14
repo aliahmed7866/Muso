@@ -20,7 +20,7 @@ const reconnectPage = `<!doctype html>
 <main>
   <h1>Reconnecting to Muso</h1>
   <p id="status" role="status">Checking the local server…</p>
-  <p>If Termux is stopped, open it and run <code>~/bin/muso open</code>.</p>
+  <p>Muso will reconnect automatically. If Android stopped Termux, open Termux, then return here. Your queue is saved.</p>
   <button id="retry" type="button">Check again</button>
   <noscript><p><a href="/">Open Muso</a></p></noscript>
 </main>

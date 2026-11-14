@@ -2,8 +2,12 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python="$repo/.venv/bin/python"
-export MUSO_DATA_DIR="${MUSO_DATA_DIR:-$HOME/.local/share/muso}"
-export MUSO_PORT="${MUSO_PORT:-8765}"
+service="${PREFIX:-/nonexistent}/var/service/muso"
+if [[ -f "$service/.muso-managed" && -f "$service/muso.conf" ]]; then
+  source "$service/muso.conf"
+fi
+export MUSO_DATA_DIR="${MUSO_DATA_DIR:-${MUSO_SERVICE_DATA_DIR:-$HOME/.local/share/muso}}"
+export MUSO_PORT="${MUSO_PORT:-${MUSO_SERVICE_PORT:-8765}}"
 url="http://127.0.0.1:$MUSO_PORT"
 mkdir -p "$MUSO_DATA_DIR"
 port_state() {
@@ -20,12 +24,21 @@ port_conflict() {
   printf 'Another service is answering at %s. Check its port setting or choose a free MUSO_PORT.\n' "$url" >&2
 }
 start() {
-  case "$(port_state)" in
-    muso) return ;;
-    other) port_conflict; return 1 ;;
-  esac
-  nohup "$python" "$repo/termux/supervise.py" >>"$MUSO_DATA_DIR/server.log" 2>&1 </dev/null &
-  for ((i=0; i<30; i++)); do
+  # Ensure supervision even if an existing server currently answers health.
+  if [[ -f "$service/.muso-managed" ]]; then
+    bash "$repo/termux/service.sh" start
+  else
+    case "$(port_state)" in
+      muso) return ;;
+      other) port_conflict; return 1 ;;
+    esac
+    # Detach the supervisor as well as its child from the calling terminal.
+    "$python" -c 'import os, subprocess, sys
+with open(os.path.join(os.environ["MUSO_DATA_DIR"], "server.log"), "ab") as log:
+    subprocess.Popen([sys.executable, sys.argv[1]], stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=log, start_new_session=True)' "$repo/termux/supervise.py"
+  fi
+  for ((i=0; i<120; i++)); do
     case "$(port_state)" in
       muso) return ;;
       other) port_conflict; return 1 ;;
@@ -36,10 +49,23 @@ start() {
   return 1
 }
 case "${1:-open}" in
+  enable) exec bash "$repo/termux/service.sh" install ;;
+  stop)
+    if [[ -f "$service/.muso-managed" ]]; then bash "$repo/termux/service.sh" stop
+    else "$python" "$repo/termux/supervise.py" stop; fi
+    printf 'Muso stopped. Run ~/bin/muso start to enable it again.\n'
+    ;;
+  restart)
+    if [[ -f "$service/.muso-managed" ]]; then bash "$repo/termux/service.sh" stop
+    else "$python" "$repo/termux/supervise.py" stop; fi
+    start
+    printf '%s\n' "$url"
+    ;;
   serve) exec "$python" "$repo/app.py" ;;
   start) start; printf '%s\n' "$url" ;;
   open) start; termux-open-url "$url" ;;
   status)
+    if [[ -f "$service/.muso-managed" ]]; then bash "$repo/termux/service.sh" status || true; fi
     case "$(port_state)" in
       muso) printf 'Running at %s\n' "$url" ;;
       other) port_conflict; exit 1 ;;
@@ -90,5 +116,5 @@ try:
 except urllib.error.HTTPError as exc: sys.exit(json.load(exc).get("error","Import failed"))' "$url" "$2"
     termux-open-url "$url/?imports=1"
     ;;
-  *) printf 'Usage: muso [open|start|serve|status|discover [status]|share URL]\n' >&2; exit 2 ;;
+  *) printf 'Usage: muso [open|start|stop|restart|enable|serve|status|discover [status]|share URL]\n' >&2; exit 2 ;;
 esac

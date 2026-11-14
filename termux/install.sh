@@ -35,4 +35,5 @@ if [[ ! -e "$opener" && ! -L "$opener" ]]; then
 else
   printf 'Existing Android share handler left in place. See the README to add Muso routing.\n'
 fi
-printf 'Start Muso with ~/bin/muso open\n'
+bash "$repo/termux/service.sh" install
+printf 'Open Muso with ~/bin/muso open\n'
