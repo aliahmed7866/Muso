@@ -122,20 +122,39 @@ function render() {
     const search = form('Song and artist', 'Search for a song or artist', 'Search', query => searchInto(query, results));
     const controls = node('div', undefined, 'card');
     const status = node('p');
+    const runStatus = node('p', '', 'muted');
+    runStatus.setAttribute('role', 'status');
+    const run = button('Discover Now', async () => {
+      run.disabled = true;
+      try {
+        daily = await api('discovery/run', 'POST');
+      } finally {
+        updateDaily();
+      }
+    }, 'primary');
     const toggle = button('', async () => {
       daily = await api('discovery', 'PATCH', {enabled: !daily.enabled});
       updateDaily();
     });
     function updateDaily() {
       status.textContent = daily.enabled
-        ? `${daily.added} of ${daily.limit} new songs saved today. Muso looks for more while it runs.`
+        ? `${daily.added} saved today. ${daily.added >= daily.limit ? 'Automatic discovery is complete for today.' : `Automatic discovery runs until ${daily.limit} are saved.`}`
         : 'Automatic additions are paused.';
       toggle.textContent = daily.enabled ? 'Pause daily discovery' : 'Enable daily discovery';
+      const request = daily.manual;
+      run.disabled = ['queued', 'running'].includes(request?.status);
+      if (run.disabled) {
+        runStatus.textContent = (request.status === 'running' ? 'Looking for music…' : 'Queued…') +
+          ` ${request.added} of ${daily.limit} saved in this batch.`;
+      } else {
+        const saved = request?.status === 'done' ? `${request.added} songs saved. ` : '';
+        runStatus.textContent = saved + (request?.message || '');
+      }
     }
     if (daily) {
       const actions = node('div', undefined, 'actions');
-      actions.append(button('View Daily Finds', () => navigate('finds'), 'primary'), toggle);
-      controls.append(node('strong', 'Daily discovery'), status, actions);
+      actions.append(run, button('View Daily Finds', () => navigate('finds')), toggle);
+      controls.append(node('strong', 'Daily discovery'), status, actions, runStatus);
       updateDaily();
       updateDailyControls = updateDaily;
       $('body').append(controls);
@@ -607,8 +626,9 @@ if ('mediaSession' in navigator) {
   }
 }
 
-const fromShare = new URLSearchParams(location.search).has('imports');
-if (fromShare) view = 'imports';
+const launch = new URLSearchParams(location.search);
+if (launch.has('imports')) view = 'imports';
+else if (launch.has('discover')) view = 'discover';
 refresh().then(() => {
   restorePlayback();
   return poll();
@@ -623,7 +643,7 @@ setInterval(async () => {
   if (document.visibilityState !== 'visible') return;
   try {
     const status = await api('discovery');
-    if (status.added !== daily?.added || status.enabled !== daily?.enabled) {
+    if (JSON.stringify(status) !== JSON.stringify(daily)) {
       if (view === 'discover') {
         ({tracks, playlists, discovery: daily} = await api('library'));
         updateDailyControls?.();
@@ -632,4 +652,27 @@ setInterval(async () => {
       }
     }
   } catch { /* A stopped server will be checked again on the next tick. */ }
-}, 15000);
+}, 5000);
+
+let installPrompt;
+const installButton = $('install');
+installButton.hidden = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  installPrompt = event;
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  installButton.hidden = true;
+});
+installButton.onclick = async () => {
+  if (installPrompt) {
+    const prompt = installPrompt;
+    installPrompt = null;
+    await prompt.prompt();
+    if ((await prompt.userChoice).outcome === 'accepted') installButton.hidden = true;
+  } else {
+    modal('Install Muso', node('p', 'Open your browser menu and choose Install app or Add to Home screen.'));
+  }
+};
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

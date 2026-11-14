@@ -24,6 +24,34 @@ case "${1:-open}" in
   start) start; printf '%s\n' "$url" ;;
   open) start; termux-open-url "$url" ;;
   status) running && printf 'Running at %s\n' "$url" || { printf 'Muso is stopped\n'; exit 1; } ;;
+  discover)
+    start
+    "$python" -c 'import json, os, sys
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+
+token = (Path(os.environ["MUSO_DATA_DIR"]) / "token").read_text().strip()
+status_only = sys.argv[2:] == ["status"]
+if sys.argv[2:] and not status_only:
+    sys.exit("Usage: muso discover [status]")
+endpoint = "/api/discovery" + ("" if status_only else "/run")
+request = Request(sys.argv[1] + endpoint, method="GET" if status_only else "POST",
+                  headers={"X-Muso-Token": token})
+try:
+    with urlopen(request, timeout=10) as response:
+        data = json.load(response)
+except HTTPError as exc:
+    sys.exit(json.load(exc).get("error", "Discovery request failed."))
+except URLError as exc:
+    sys.exit(str(exc.reason))
+batch = data["manual"]
+print("Discovery: {} ({} of {} saved in batch)".format(batch["status"], batch["added"], data["limit"]))
+if batch["message"]:
+    print(batch["message"])
+if not status_only:
+    print("Follow progress with ~/bin/muso discover status or open Discover in Muso.")' "$url" "${@:2}"
+    ;;
   share)
     [[ $# -ge 2 ]] || { printf 'Share a song URL with Muso.\n' >&2; exit 2; }
     # Validate the shared text before starting the server.
@@ -40,5 +68,5 @@ try:
 except urllib.error.HTTPError as exc: sys.exit(json.load(exc).get("error","Import failed"))' "$url" "$2"
     termux-open-url "$url/?imports=1"
     ;;
-  *) printf 'Usage: muso [open|start|serve|status|share URL]\n' >&2; exit 2 ;;
+  *) printf 'Usage: muso [open|start|serve|status|discover [status]|share URL]\n' >&2; exit 2 ;;
 esac

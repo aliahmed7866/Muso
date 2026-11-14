@@ -12,7 +12,11 @@ bash termux/install.sh
 ~/bin/muso open
 ```
 
-The player opens at [127.0.0.1:8765](http://127.0.0.1:8765). Add it to your Android home screen from your browser menu if desired. Keep Termux running during playback and imports. Android may stop Termux in the background when battery restrictions are enabled.
+The player opens at [127.0.0.1:8765](http://127.0.0.1:8765). Tap **Install app**, or open Chrome's menu and choose **Install app** or **Add to Home screen**. Open Muso from its icon in a standalone window. Keep Termux running during playback and imports. If Android stops Termux, run `~/bin/muso start` before opening the icon again.
+
+## Discover music on demand
+
+Tap **Discover → Discover Now** or run `~/bin/muso discover`. Each request searches for up to five tracks based on music in your library and skips duplicates. You can run another batch after it finishes, even if automatic discovery is paused or has reached its daily limit. Songs added on demand count toward that day's automatic allowance. View progress in Discover or run `~/bin/muso discover status`. New tracks appear under **Daily Finds**.
 
 - **YouTube and SoundCloud:** Paste a full song or video URL under **Add music**, or use Android **Share → Termux**. Muso saves downloadable audio through yt-dlp. Import recordings you have permission to save.
 - **Spotify:** Share an individual track. Under **Imports**, choose a YouTube recording to save. If the suggestions are off, search by title and artist or paste the correct YouTube link. Spotify downloads and playlist URLs are unsupported.

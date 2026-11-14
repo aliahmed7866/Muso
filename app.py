@@ -40,6 +40,9 @@ CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created);
 CREATE TABLE IF NOT EXISTS daily_discovery (
  day TEXT NOT NULL, track_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS discovery_requests (
+ id INTEGER PRIMARY KEY CHECK (id=1), status TEXT NOT NULL,
+ added INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '');
 '''
 
 
@@ -79,7 +82,7 @@ class Store:
         with self.db() as db:
             db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?', [*fields.values(), job_id])
 
-    def add_track(self, path, metadata, discovery_day=None):
+    def add_track(self, path, metadata, discovery_day=None, manual=False):
         path = Path(path)
         digest = hashlib.sha256()
         with path.open('rb') as f:
@@ -91,8 +94,7 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if discovery_day:
                 status = self.discovery_status(db)
-                if (discovery_day != date.today().isoformat() or not status['enabled']
-                        or status['added'] >= status['limit']):
+                if discovery_day != date.today().isoformat() or not self.can_discover(status, manual):
                     return None
             existing = db.execute('SELECT id FROM tracks WHERE fingerprint=? OR source_url=?', (fingerprint, source_url)).fetchone()
             if existing:
@@ -108,6 +110,8 @@ class Store:
                 db.execute('INSERT INTO tracks (id,title,artist,album,duration,filename,source,source_url,fingerprint,created) VALUES (?,?,?,?,?,?,?,?,?,?)', (track_id, str(metadata.get('title') or 'Untitled')[:300], str(metadata.get('artist') or 'Unknown artist')[:300], str(metadata.get('album') or '')[:300], float(metadata.get('duration') or 0), filename, metadata.get('source', 'local'), source_url, fingerprint, time.time()))
                 if discovery_day:
                     db.execute('INSERT INTO daily_discovery VALUES (?,?)', (discovery_day, track_id))
+                    if manual:
+                        db.execute('UPDATE discovery_requests SET added=added+1 WHERE id=1')
             except Exception:
                 target.unlink(missing_ok=True)
                 raise
@@ -147,20 +151,55 @@ class Store:
     def discovery_status(self, db):
         setting = db.execute("SELECT value FROM preferences WHERE key='discovery'").fetchone()
         added = db.execute('SELECT count(*) FROM daily_discovery WHERE day=?', (date.today().isoformat(),)).fetchone()[0]
-        return dict(enabled=not setting or setting[0] == '1', added=added, limit=5)
+        manual = db.execute('SELECT status,added,message FROM discovery_requests WHERE id=1').fetchone()
+        return dict(enabled=not setting or setting[0] == '1', added=added, limit=5,
+                    manual=dict(manual) if manual else dict(status='idle', added=0, message=''))
+
+    @staticmethod
+    def can_discover(status, manual):
+        if manual:
+            request = status['manual']
+            return request['status'] == 'running' and request['added'] < status['limit']
+        return status['enabled'] and status['added'] < status['limit']
+
+    def process_discovery_request(self, day):
+        with self.db() as db:
+            row = db.execute("SELECT added FROM discovery_requests WHERE status='queued'").fetchone()
+            if row is None:
+                return False
+            db.execute("UPDATE discovery_requests SET status='running' WHERE id=1")
+        try:
+            outcome = discovery.run(self, day, manual=True)
+            with self.db() as db:
+                status = self.discovery_status(db)
+                added = status['manual']['added']
+                more = added < status['limit'] and outcome in ('saved', 'yield')
+                message = '' if more else ('Batch complete.' if added >= status['limit'] else
+                                           'No more suitable matches found in this batch.')
+                db.execute('UPDATE discovery_requests SET status=?,message=? WHERE id=1',
+                           ('queued' if more else 'done', message))
+        except Exception:
+            logging.getLogger(__name__).exception('Requested discovery failed')
+            with self.db() as db:
+                db.execute("UPDATE discovery_requests SET status='failed',message=? WHERE id=1",
+                           ('The search or download failed. Check your connection and try again.',))
+        return True
 
     def worker(self):
         with self.db() as db:
             db.execute("UPDATE jobs SET status='queued',message='Resuming after restart…' WHERE status='working'")
+            db.execute("UPDATE discovery_requests SET status='queued' WHERE status='running'")
         last_day, next_attempt = '', 0
         while True:
             if self.process_one():
                 continue
             day = date.today().isoformat()
+            if self.process_discovery_request(day):
+                continue
             if day != last_day or time.monotonic() >= next_attempt:
                 last_day, next_attempt = day, time.monotonic() + 1800
                 try:
-                    if discovery.run(self, day):
+                    if discovery.run(self, day) == 'saved':
                         next_attempt = time.monotonic() + 15
                 except Exception:
                     logging.getLogger(__name__).exception('Daily discovery failed')
@@ -225,6 +264,10 @@ def create_app(data_dir=None):
     def index():
         return render_template('index.html', token=store.token)
 
+    @app.get('/sw.js')
+    def service_worker():
+        return send_file(Path(app.static_folder) / 'sw.js', mimetype='text/javascript', max_age=0)
+
     @app.get('/api/health')
     def health():
         return jsonify(ok=True, app='Muso', version='1.0.0')
@@ -248,6 +291,18 @@ def create_app(data_dir=None):
     def get_discovery():
         with store.db() as db:
             return jsonify(store.discovery_status(db))
+
+    @app.post('/api/discovery/run')
+    def request_discovery():
+        with store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            status = store.discovery_status(db)
+            if status['manual']['status'] in ('queued', 'running'):
+                return jsonify(status), 202
+            if not discovery.seeds_for(db):
+                abort(409, 'Add a song with a known artist before running discovery.')
+            db.execute("INSERT OR REPLACE INTO discovery_requests VALUES (1,'queued',0,'')")
+            return jsonify(store.discovery_status(db)), 202
 
     @app.patch('/api/discovery')
     def update_discovery():

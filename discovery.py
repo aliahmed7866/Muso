@@ -44,21 +44,26 @@ def candidate(entry):
     return title, artist
 
 
-def run(store, day):
+def seeds_for(db):
+    return list(db.execute("""
+        SELECT t.title,t.artist FROM tracks AS t
+        LEFT JOIN daily_discovery AS d ON t.id=d.track_id
+        WHERE trim(t.artist) NOT IN ('', 'Unknown artist', 'YouTube')
+          AND (d.track_id IS NULL OR t.liked=1)
+        ORDER BY t.liked DESC, t.plays DESC, t.created DESC LIMIT 30
+    """))
+
+
+def run(store, day, manual=False):
     with store.db() as db:
         status = store.discovery_status(db)
-        if not status['enabled'] or status['added'] >= status['limit']:
+        if not store.can_discover(status, manual):
             return
-        seeds = list(db.execute("""
-            SELECT title,artist FROM tracks
-            WHERE artist NOT IN ('Unknown artist', 'YouTube')
-              AND id NOT IN (SELECT track_id FROM daily_discovery)
-            ORDER BY liked DESC, plays DESC, created DESC LIMIT 60
-        """))
+        seeds = seeds_for(db)
     if not seeds:
         return
     rng = random.SystemRandom()
-    seeds = rng.sample(seeds[:30], min(4, len(seeds)))
+    seeds = rng.sample(seeds, min(4, len(seeds)))
     for seed in seeds:
         artist = seed['artist'].split(',')[0].removesuffix(' - Topic')
         queries = [f"{seed['title']} {artist} similar songs official audio",
@@ -66,10 +71,11 @@ def run(store, day):
         for query in queries:
             with store.db() as db:
                 status = store.discovery_status(db)
-                if (not status['enabled'] or status['added'] >= status['limit']
-                        or day != date.today().isoformat()
-                        or db.execute("SELECT 1 FROM jobs WHERE status='queued' LIMIT 1").fetchone()):
+                if not store.can_discover(status, manual):
                     return
+                if (day != date.today().isoformat()
+                        or db.execute("SELECT 1 FROM jobs WHERE status='queued' LIMIT 1").fetchone()):
+                    return 'yield'
             results = importer.search(query)
             for entry in results:
                 info = candidate(entry)
@@ -84,8 +90,8 @@ def run(store, day):
                 try:
                     path, metadata = importer.download(entry['url'], folder)
                     metadata.update(title=title, artist=artist_name)
-                    if store.add_track(path, metadata, discovery_day=day):
-                        return True
+                    if store.add_track(path, metadata, discovery_day=day, manual=manual):
+                        return 'saved'
                 except importer.ImportFailure:
                     continue
                 finally:
