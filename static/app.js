@@ -122,7 +122,7 @@ function render() {
     });
     function updateDaily() {
       status.textContent = daily.enabled
-        ? daily.added + ' of 3 new songs saved today. Muso looks for more while it runs.'
+        ? `${daily.added} of ${daily.limit} new songs saved today. Muso looks for more while it runs.`
         : 'Automatic additions are paused.';
       toggle.textContent = daily.enabled ? 'Pause daily discovery' : 'Enable daily discovery';
     }

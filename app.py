@@ -147,7 +147,7 @@ class Store:
     def discovery_status(self, db):
         setting = db.execute("SELECT value FROM preferences WHERE key='discovery'").fetchone()
         added = db.execute('SELECT count(*) FROM daily_discovery WHERE day=?', (date.today().isoformat(),)).fetchone()[0]
-        return dict(enabled=not setting or setting[0] == '1', added=added, limit=3)
+        return dict(enabled=not setting or setting[0] == '1', added=added, limit=5)
 
     def worker(self):
         with self.db() as db:
