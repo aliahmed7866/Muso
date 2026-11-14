@@ -250,11 +250,12 @@ class Store:
                                            'No more suitable matches found in this batch.')
                 db.execute('UPDATE discovery_requests SET status=?,message=? WHERE id=1',
                            ('queued' if more else 'done', message))
-        except Exception:
+        except Exception as exc:
             logging.getLogger(__name__).exception('Requested discovery failed')
             with self.db() as db:
                 db.execute("UPDATE discovery_requests SET status='failed',message=? WHERE id=1",
-                           ('The search or download failed. Check your connection and try again.',))
+                           ((str(exc)[:700] if isinstance(exc, importer.ImportFailure) else
+                             'Discovery failed. Check the Muso server log and try again.'),))
         return True
 
     def worker(self):
@@ -633,6 +634,57 @@ def create_app(data_dir=None):
         return jsonify(ok=True)
 
     search_lock = threading.Lock()
+    search_tasks = {}
+    search_tasks_lock = threading.Lock()
+
+    def search_task(task_id, query):
+        try:
+            result = dict(status='done', results=importer.search(query))
+        except importer.ImportFailure as exc:
+            result = dict(status='failed', error=str(exc)[:700])
+        except Exception:
+            app.logger.exception('YouTube search failed')
+            result = dict(status='failed', error='Search failed unexpectedly. Check the Muso server log and retry.')
+        try:
+            with search_tasks_lock:
+                search_tasks[task_id].update(result, updated=time.monotonic())
+        finally:
+            search_lock.release()
+
+    @app.post('/api/search/tasks')
+    def start_search_task():
+        query = text_field(body(), 'query', 160)
+        with search_tasks_lock:
+            now = time.monotonic()
+            for task_id, task in list(search_tasks.items()):
+                if task['status'] != 'running' and now - task['updated'] > 900:
+                    del search_tasks[task_id]
+            for task_id, task in search_tasks.items():
+                if task['query'] == query and task['status'] == 'running':
+                    return jsonify(id=task_id, status='running'), 202
+            if not search_lock.acquire(blocking=False):
+                abort(429, 'Another search is running. Wait for it to finish, then retry.')
+            task_id = uuid.uuid4().hex
+            search_tasks[task_id] = dict(query=query, status='running', updated=now)
+            # Retain only a small number of results on phones with limited memory.
+            while len(search_tasks) > 16:
+                oldest = next(key for key, value in search_tasks.items() if value['status'] != 'running')
+                del search_tasks[oldest]
+            try:
+                threading.Thread(target=search_task, args=(task_id, query), daemon=True).start()
+            except Exception:
+                del search_tasks[task_id]
+                search_lock.release()
+                raise
+        return jsonify(id=task_id, status='running'), 202
+
+    @app.get('/api/search/tasks/<task_id>')
+    def get_search_task(task_id):
+        with search_tasks_lock:
+            task = search_tasks.get(task_id)
+            if task is None:
+                abort(404, 'This search expired or Muso restarted. Search again.')
+            return jsonify({key: value for key, value in task.items() if key not in ('query', 'updated')})
 
     @app.post('/api/search')
     def search():

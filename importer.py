@@ -61,7 +61,12 @@ def search(query):
     if not query:
         raise ImportFailure("Enter a song and artist to search.")
     raw = ytdlp(['--flat-playlist', '--dump-single-json', '--playlist-end', '6', '--', 'ytsearch6:' + query])
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not isinstance(data.get('entries', []), list):
+            raise ValueError('Unexpected search result')
+    except ValueError as exc:
+        raise ImportFailure('YouTube returned an unreadable search result. Retry or update the downloader using the README.') from exc
     return [dict(title=e.get('title') or 'Untitled', artist=e.get('uploader') or e.get('channel') or 'YouTube', duration=e.get('duration') or 0, url='https://www.youtube.com/watch?v=' + e['id']) for e in data.get('entries', []) if e and re.fullmatch(r'[\w-]{11}', e.get('id', ''), re.ASCII)]
 
 

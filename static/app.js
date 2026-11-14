@@ -47,10 +47,36 @@ async function api(path, method = 'GET', data) {
     headers['Content-Type'] = 'application/json';
     data = JSON.stringify(data);
   }
-  const response = await fetch('/api/' + path, {method, body: data, headers});
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || 'Muso could not complete that action.');
-  return result;
+  // Retry reads only: replaying an import or playlist mutation could duplicate work.
+  const attempts = method === 'GET' ? 3 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), data instanceof FormData ? 180000 : 15000);
+    let response, result;
+    try {
+      response = await fetch('/api/' + path, {method, body: data, headers, signal: controller.signal});
+      const text = await response.text();
+      try { result = JSON.parse(text); } catch {
+        throw new Error(response.status === 404 ? 'Muso needs an update or restart. Update it in Termux, restart Muso, then reload this page.'
+          : 'Muso returned an unreadable response. Restart Muso in Termux and reload this page.');
+      }
+    } catch (error) {
+      const connectionError = error.name === 'AbortError' || error.name === 'TypeError';
+      if (!connectionError) throw error;
+      if (attempt + 1 < attempts) {
+        await new Promise(resolve => setTimeout(resolve, 750 * (attempt + 1)));
+        continue;
+      }
+      $('status').textContent = 'Muso disconnected · check Termux';
+      throw new Error(error.name === 'AbortError'
+        ? 'Muso took too long to respond. Check Termux is running, then retry.'
+        : 'Cannot reach Muso on this phone. Open Termux and run ~/bin/muso start, then retry.');
+    } finally { clearTimeout(timeout); }
+    if (!response.ok) throw new Error(response.status === 404 && path === 'search/tasks'
+      ? 'Restart Muso in Termux to load the updated search, then reload this page.'
+      : result?.error || 'Muso could not complete that action.');
+    return result;
+  }
 }
 
 function toast(message) {
@@ -232,11 +258,15 @@ function render() {
     runStatus.setAttribute('role', 'status');
     const run = button('Discover Now', async () => {
       run.disabled = true;
+      let failure = '';
       try {
         daily = await api('discovery/run', 'POST');
+      } catch (error) {
+        failure = error.message;
       } finally {
         updateDaily();
       }
+      if (failure) runStatus.textContent = failure;
     }, 'primary');
     const toggle = button('', async () => {
       daily = await api('discovery', 'PATCH', {enabled: !daily.enabled});
@@ -727,11 +757,30 @@ function candidates(results, job) {
 
 async function searchInto(query, results, job) {
   results.replaceChildren(node('p', 'Searching YouTube…'));
+  const request = {};
+  results.searchRequest = request;
+  results.setAttribute('aria-live', 'polite');
+  results.setAttribute('aria-busy', 'true');
   try {
-    const data = await api('search', 'POST', {query});
-    results.replaceChildren(candidates(data.results, job));
+    const task = await api('search/tasks', 'POST', {query});
+    const deadline = Date.now() + 180000;
+    while (results.isConnected && results.searchRequest === request) {
+      const data = await api('search/tasks/' + task.id);
+      if (!results.isConnected || results.searchRequest !== request) return;
+      if (data.status === 'failed') throw new Error(data.error || 'YouTube search failed. Please retry.');
+      if (data.status === 'done') {
+        results.replaceChildren(candidates(data.results, job));
+        return;
+      }
+      if (Date.now() >= deadline) throw new Error('The search is taking too long. Check your connection, then retry.');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   } catch (error) {
-    results.replaceChildren(node('p', error.message));
+    if (results.isConnected && results.searchRequest === request) {
+      results.replaceChildren(node('p', error.message), button('Retry search', () => searchInto(query, results, job)));
+    }
+  } finally {
+    if (results.searchRequest === request) results.setAttribute('aria-busy', 'false');
   }
 }
 

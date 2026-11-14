@@ -20,6 +20,8 @@ Tap **Discover → Discover Now** or run `~/bin/muso discover`. Each request sea
 
 Use **Find music like this** from a song menu to start discovery around that track. General discovery favours liked and played music and looks for different performers before falling back to more tracks from a familiar artist. Use the skip options on Daily Finds to exclude songs or artists from future batches.
 
+Song searches run as background jobs so the browser only makes short requests for their results. A dropped status request is retried automatically. **Retry search** reuses a matching search while it is still running. Search errors stay visible, and Discover Now shows the source error when a batch fails. If Muso cannot be reached, open Termux and run `~/bin/muso start`. After updating Python code, stop the existing Muso server and start it again; refreshing the page alone does not reload the backend.
+
 Browse the library by artist, album, or genre. Muso uses available tags, and you can fill in missing album or genre details from the song menu. New online imports select yt-dlp's best available audio stream and preserve it without re-encoding. If the source offers only combined video and audio, FFmpeg copies the audio stream into a playable container. The song menu shows the reported format and bitrate when available.
 
 - **YouTube and SoundCloud:** Paste a full song or video URL under **Add music**, or use Android **Share → Termux**. Muso saves downloadable audio through yt-dlp. Import recordings you have permission to save.
@@ -72,6 +74,7 @@ The regression checks use a temporary library and generated silent audio. They d
 
 ```bash
 npm install --no-save jsdom playwright
+python -m unittest discover -s tests -p test_search.py
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening-dom.cjs
 npx playwright install chromium
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening.cjs

@@ -29,6 +29,7 @@ async function until(predicate) {
     const html = await (await fetch(url)).text();
     dom = new JSDOM(html, {url, runScripts: 'outside-only'});
     const w = dom.window, d = w.document;
+    w.AbortController = AbortController;
     w.fetch = (endpoint, options) => fetch(new URL(endpoint, url), options);
     w.matchMedia = () => ({matches: false});
     w.confirm = () => true;
@@ -42,7 +43,7 @@ async function until(predicate) {
     audio.play = async () => { paused = false; audio.dispatchEvent(new w.Event('play')); };
     audio.pause = () => { paused = true; audio.dispatchEvent(new w.Event('pause')); };
     audio.load = () => {};
-    w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep};');
+    w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep}; window.testNetwork = {api, searchInto};');
     const saved = () => JSON.parse(w.localStorage.getItem('muso.playback.v1'));
     const library = async () => (await fetch(url + '/api/library')).json();
     const click = async (name, root = d) => {
@@ -156,7 +157,59 @@ async function until(predicate) {
     });
     assert.equal(response.status, 409);
     assert.deepEqual((await library()).playlists[0].tracks, []);
-    console.log('PASS: 4 mixes, selection across filters, bulk playlists, duplicate-free queue, play-next promotion, queue undo/save, sleep/loop precedence, restored/expired deadlines, shuffle and edit conflicts');
+    // Read retries recover from dropped local responses; mutations are never replayed.
+    const realFetch = w.fetch;
+    let reads = 0, writes = 0;
+    w.fetch = async (endpoint, options) => {
+      if (endpoint === '/api/network-test') {
+        reads++;
+        if (reads < 3) throw new TypeError('Failed to fetch');
+        return new Response(JSON.stringify({ok: true}));
+      }
+      if (endpoint === '/api/discovery/run') {
+        writes++;
+        throw new TypeError('Failed to fetch');
+      }
+      return realFetch(endpoint, options);
+    };
+    assert.equal((await w.testNetwork.api('network-test')).ok, true);
+    assert.equal(reads, 3);
+    await assert.rejects(w.testNetwork.api('discovery/run', 'POST'), /Cannot reach Muso.*Termux/);
+    assert.equal(writes, 1);
+    d.querySelector('[data-view=discover]').click();
+    await click('Discover Now');
+    assert.ok(d.getElementById('body').textContent.includes('Cannot reach Muso'));
+    assert.equal([...d.querySelectorAll('button')].find(b => b.textContent === 'Discover Now').disabled, false);
+    assert.equal(writes, 2);
+    // Short polling recovers a dropped read and renders a completed background search.
+    const results = d.createElement('div');
+    d.body.append(results);
+    let polls = 0, starts = 0, providerFailure = false;
+    const answer = value => new Response(JSON.stringify(value));
+    w.fetch = async (endpoint, options) => {
+      if (endpoint === '/api/search/tasks') { starts++; return answer({id: 'test-search', status: 'running'}); }
+      if (endpoint === '/api/search/tasks/test-search') {
+        polls++;
+        if (polls === 1) throw new TypeError('Failed to fetch');
+        if (polls === 2) return answer({status: 'running'});
+        if (providerFailure) return answer({status: 'failed', error: 'YouTube timed out. Retry.'});
+        return answer({status: 'done', results: [{title: 'Found song', artist: 'Artist', duration: 180, url: 'https://www.youtube.com/watch?v=abcdefghijk'}]});
+      }
+      return realFetch(endpoint, options);
+    };
+    await w.testNetwork.searchInto('Song Artist', results);
+    assert.ok(results.textContent.includes('Found song'));
+    assert.equal(starts, 1);
+    assert.equal(results.getAttribute('aria-busy'), 'false');
+    providerFailure = true;
+    await w.testNetwork.searchInto('Song Artist', results);
+    assert.ok(results.textContent.includes('YouTube timed out. Retry.'));
+    providerFailure = false;
+    await click('Retry search', results);
+    await until(() => results.textContent.includes('Found song'));
+    results.remove();
+    w.fetch = realFetch;
+    console.log('PASS: listening regressions plus transient read recovery, no mutation replay, persistent Discover errors, search polling and retry');
   } finally {
     dom?.window.close();
     server.kill();
