@@ -2,7 +2,26 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v pkg >/dev/null || { printf 'Run this installer inside Termux.\n' >&2; exit 1; }
-pkg install -y python ffmpeg nodejs-lts curl
+packages=()
+for dependency in python ffmpeg curl; do
+  if ! command -v "$dependency" >/dev/null; then
+    packages+=("$dependency")
+  fi
+done
+if ! command -v node >/dev/null; then
+  packages+=(nodejs-lts)
+fi
+repair_hint() {
+  printf 'Termux dependencies are not ready. Run pkg upgrade, then rerun bash termux/install.sh.\n' >&2
+}
+if (( ${#packages[@]} )) && ! pkg install -y "${packages[@]}"; then
+  repair_hint
+  exit 1
+fi
+if ! python --version || ! ffmpeg -version >/dev/null || ! curl --version >/dev/null || ! node --version; then
+  repair_hint
+  exit 1
+fi
 python -m venv "$repo/.venv"
 "$repo/.venv/bin/python" -m pip install -U -r "$repo/requirements.txt"
 mkdir -p "$HOME/bin"
