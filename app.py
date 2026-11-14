@@ -1,4 +1,5 @@
 """Muso: a phone-owned music library served only on loopback."""
+from errno import EADDRINUSE
 import fcntl
 import hashlib
 import json
@@ -700,7 +701,8 @@ def create_app(data_dir=None):
 
 
 def main():
-    from waitress import serve
+    from waitress.server import create_server
+
     app = create_app()
     store = app.extensions['store']
     lock = (store.root / 'server.lock').open('w')
@@ -708,10 +710,17 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         raise SystemExit('Muso is already running for this library.')
-    threading.Thread(target=store.worker, daemon=True).start()
     port = int(os.environ.get('MUSO_PORT', '8765'))
+    try:
+        server = create_server(app, host='127.0.0.1', port=port, threads=8,
+                               max_request_body_size=512 * 1024 * 1024)
+    except OSError as exc:
+        if exc.errno != EADDRINUSE:
+            raise
+        raise SystemExit(f'Port {port} is in use. Check the other local app or set MUSO_PORT to a free port.') from None
+    threading.Thread(target=store.worker, daemon=True).start()
     print(f'Muso is ready at http://127.0.0.1:{port}', flush=True)
-    serve(app, host='127.0.0.1', port=port, threads=8, max_request_body_size=512 * 1024 * 1024)
+    server.run()
 
 
 if __name__ == '__main__':

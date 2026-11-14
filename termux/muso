@@ -6,14 +6,30 @@ export MUSO_DATA_DIR="${MUSO_DATA_DIR:-$HOME/.local/share/muso}"
 export MUSO_PORT="${MUSO_PORT:-8765}"
 url="http://127.0.0.1:$MUSO_PORT"
 mkdir -p "$MUSO_DATA_DIR"
-running() {
-  curl --max-time 1 -fsS "$url/api/health" 2>/dev/null | grep -q '"app":"Muso"'
+port_state() {
+  local body
+  if ! body=$(curl --noproxy '*' --max-time 1 -sS "$url/api/health" 2>/dev/null); then
+    printf 'unreachable\n'
+  elif [[ "$body" == *'"app":"Muso"'* && "$body" == *'"ok":true'* ]]; then
+    printf 'muso\n'
+  else
+    printf 'other\n'
+  fi
+}
+port_conflict() {
+  printf 'Another service is answering at %s. Check its port setting or choose a free MUSO_PORT.\n' "$url" >&2
 }
 start() {
-  if running; then return; fi
+  case "$(port_state)" in
+    muso) return ;;
+    other) port_conflict; return 1 ;;
+  esac
   nohup "$python" "$repo/termux/supervise.py" >>"$MUSO_DATA_DIR/server.log" 2>&1 </dev/null &
   for ((i=0; i<30; i++)); do
-    if running; then return; fi
+    case "$(port_state)" in
+      muso) return ;;
+      other) port_conflict; return 1 ;;
+    esac
     sleep .25
   done
   printf 'Muso did not start. Check %s/server.log\n' "$MUSO_DATA_DIR" >&2
@@ -23,7 +39,13 @@ case "${1:-open}" in
   serve) exec "$python" "$repo/app.py" ;;
   start) start; printf '%s\n' "$url" ;;
   open) start; termux-open-url "$url" ;;
-  status) running && printf 'Running at %s\n' "$url" || { printf 'Muso is stopped\n'; exit 1; } ;;
+  status)
+    case "$(port_state)" in
+      muso) printf 'Running at %s\n' "$url" ;;
+      other) port_conflict; exit 1 ;;
+      *) printf 'Muso is unreachable at %s\n' "$url"; exit 1 ;;
+    esac
+    ;;
   discover)
     start
     "$python" -c 'import json, os, sys
