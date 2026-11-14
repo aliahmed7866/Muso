@@ -82,12 +82,44 @@ def download(url, folder):
         raise ImportFailure("Choose a YouTube match first.")
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    raw = ytdlp(['--no-playlist', '--max-filesize', '500M', '--match-filter', '!is_live & duration <= 3600', '-f', 'bestaudio/best', '-x', '--audio-format', 'best', '--no-progress', '--no-simulate', '--print', 'after_move:%()j', '-o', str(folder / 'audio.%(ext)s'), '--', canonical], timeout=900)
+    raw = ytdlp([
+        '--no-playlist', '--max-filesize', '500M', '--match-filter', '!is_live & duration <= 3600',
+        '-f', 'bestaudio/best', '--no-progress', '--no-simulate',
+        '--print', 'after_move:%()j', '-o', str(folder / 'source.%(ext)s'), '--', canonical
+    ], timeout=900)
     records = [json.loads(line) for line in raw.splitlines() if line.startswith('{')]
     if not records:
         raise ImportFailure("No downloadable audio. Live streams and items over one hour are excluded.")
     info = records[-1]
-    files = [p for p in folder.glob('audio.*') if p.suffix.lower() in {'.mp3', '.m4a', '.opus', '.ogg', '.flac', '.wav', '.webm', '.aac'}]
+    files = [p for p in folder.glob('source.*') if p.suffix.lower() == '.' + str(info.get('ext', '')).lower()]
     if len(files) != 1 or not files[0].stat().st_size:
         raise ImportFailure("The source did not produce a playable audio file.")
-    return files[0], dict(title=info.get('track') or info.get('title') or 'Untitled', artist=info.get('artist') or info.get('uploader') or 'Unknown artist', album=info.get('album') or '', duration=info.get('duration') or 0, source=provider, source_url=canonical)
+    path = preserve_audio(files[0], info)
+    return path, dict(title=info.get('track') or info.get('title') or 'Untitled',
+                      artist=info.get('artist') or info.get('uploader') or 'Unknown artist',
+                      album=info.get('album') or '', genre=info.get('genre') or '',
+                      duration=info.get('duration') or 0, source=provider, source_url=canonical,
+                      codec=str(info.get('acodec') or '').split('.')[0],
+                      bitrate=round(info.get('abr') or 0))
+
+
+def preserve_audio(path, info):
+    """Keep audio-only streams as delivered. Strip any video without encoding."""
+    supported = {'.mp3', '.m4a', '.opus', '.ogg', '.flac', '.wav', '.webm', '.aac'}
+    if info.get('vcodec') == 'none' and path.suffix.lower() in supported:
+        return path
+    codec = str(info.get('acodec') or '').split('.')[0]
+    container = {'mp4a': 'm4a', 'aac': 'm4a', 'opus': 'opus', 'vorbis': 'ogg',
+                 'mp3': 'mp3', 'flac': 'flac'}.get(codec)
+    if not container:
+        raise ImportFailure('This audio format could not be saved in a playable container without re-encoding.')
+    output = path.with_name('audio.' + container)
+    try:
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path),
+                        '-map', '0:a:0', '-c:a', 'copy', str(output)],
+                       capture_output=True, check=True, timeout=120)
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ImportFailure('Could not copy the original audio stream. Check that FFmpeg is working.') from exc
+    if not output.is_file() or not output.stat().st_size:
+        raise ImportFailure('The audio stream was empty.')
+    return output

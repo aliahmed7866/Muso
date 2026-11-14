@@ -10,6 +10,7 @@ let queue = [], current = '', history = [], shuffle = false, repeat = 0, counted
 let sleepTimer, toastTimer, importing = false;
 let sortOrder = 'default', resumeAt = null, lastSavedAt = 0;
 let playedSeconds = 0, lastAudioTime = 0;
+let browseBy = 'songs', browseGroup = '';
 const recapMonth = new Date();
 recapMonth.setDate(1);
 const playbackKey = 'muso.playback.v1';
@@ -234,6 +235,44 @@ function render() {
   });
   $('summary').textContent = collection.length + (collection.length === 1 ? ' song saved on this device' : ' songs saved on this device');
   const toolbar = node('div', undefined, 'toolbar');
+  let groupFilter = null;
+  if (view === 'library') {
+    const browse = node('div', undefined, 'actions browse-modes');
+    for (const [key, label] of [['songs', 'Songs'], ['artist', 'Artists'], ['album', 'Albums'], ['genre', 'Genres']]) {
+      const choice = button(label, () => {
+        browseBy = key;
+        browseGroup = '';
+        render();
+      }, browseBy === key ? 'primary' : undefined);
+      choice.setAttribute('aria-pressed', browseBy === key);
+      browse.append(choice);
+    }
+    $('body').append(browse);
+    if (browseBy !== 'songs') {
+      const groups = new Map();
+      for (const track of collection) {
+        const label = track[browseBy].trim() || (browseBy === 'genre' ? 'Untagged' : 'Unknown ' + browseBy);
+        const owner = browseBy === 'album' && track.album ? ' · ' + track.artist : '';
+        const id = (label + owner).toLocaleLowerCase();
+        if (!groups.has(id)) groups.set(id, {name: label + owner, tracks: new Set()});
+        groups.get(id).tracks.add(track.id);
+      }
+      const picker = node('select');
+      picker.setAttribute('aria-label', 'Choose ' + browseBy);
+      picker.append(node('option', 'All ' + (browseBy === 'genre' ? 'genres' : browseBy + 's')));
+      picker.options[0].value = '';
+      for (const [id, group] of [...groups].sort((a, b) => trackOrder.compare(a[1].name, b[1].name))) {
+        const option = node('option', group.name + ' (' + group.tracks.size + ')');
+        option.value = id;
+        picker.append(option);
+      }
+      if (!groups.has(browseGroup)) browseGroup = '';
+      picker.value = browseGroup;
+      groupFilter = groups.get(browseGroup)?.tracks || null;
+      picker.onchange = () => { browseGroup = picker.value; render(); };
+      toolbar.append(picker);
+    }
+  }
   const input = node('input');
   input.type = 'search';
   input.placeholder = 'Filter songs…';
@@ -263,8 +302,8 @@ function render() {
   function renderList() {
     const words = filter.toLocaleLowerCase().trim().split(/\s+/);
     shown = collection.filter(track => {
-      const searchable = [track.title, track.artist, track.album].join(' ').toLocaleLowerCase();
-      return words.every(word => searchable.includes(word));
+      const searchable = [track.title, track.artist, track.album, track.genre].join(' ').toLocaleLowerCase();
+      return (!groupFilter || groupFilter.has(track.id)) && words.every(word => searchable.includes(word));
     });
     if (comparators[sortOrder]) shown.sort(comparators[sortOrder]);
     playAll.disabled = !shown.length;
@@ -308,6 +347,7 @@ function row(track, play) {
   const caption = node('span');
   const detail = [track.artist];
   if (track.duration) detail.push(time(track.duration));
+  if (view === 'library' && browseBy === 'album' && track.album) detail.push(track.album);
   if (view === 'finds') detail.push(track.discovered_on);
   caption.append(node('strong', track.title), node('small', detail.join(' · ')));
   const cover = node('span', '', 'cover');
@@ -325,6 +365,24 @@ function row(track, play) {
 
 function trackMenu(track) {
   const options = node('div', undefined, 'stack');
+  if (track.codec) {
+    const quality = track.codec.toUpperCase() + (track.bitrate ? ` · ~${track.bitrate} kbps` : '');
+    options.append(node('small', quality + ' · Saved audio', 'muted'));
+  }
+  if (track.discovered_on) {
+    const reject = async kind => {
+      await api('tracks/' + track.id + '/discovery-feedback', 'POST', {kind});
+      dialog.close();
+      toast(kind === 'artist' ? 'Artist excluded from future discovery' : 'Song excluded from future discovery');
+    };
+    options.append(button('Skip this song in discovery', () => reject('song')));
+    options.append(button('Skip this artist in discovery', () => reject('artist')));
+  }
+  options.append(button('Find music like this', async () => {
+    daily = await api('discovery/run', 'POST', {seed_id: track.id});
+    dialog.close();
+    navigate('discover');
+  }));
   options.append(button('Play next', () => {
     queue.unshift(track.id);
     savePlayback();
@@ -355,11 +413,12 @@ function trackMenu(track) {
   options.append(button('Edit details', () => {
     const edit = node('form', undefined, 'stack');
     const fields = {};
-    for (const key of ['title','artist']) {
-      const label = node('label', key === 'title' ? 'Title' : 'Artist');
+    for (const key of ['title','artist','album','genre']) {
+      const label = node('label', key[0].toUpperCase() + key.slice(1));
       const input = node('input');
-      input.required = true;
-      input.value = track[key];
+      input.required = key === 'title' || key === 'artist';
+      input.maxLength = input.required ? 300 : 150;
+      input.value = track[key] || '';
       label.append(input);
       fields[key] = input;
       edit.append(label);
@@ -368,7 +427,9 @@ function trackMenu(track) {
     edit.onsubmit = async event => {
       event.preventDefault();
       try {
-        await api('tracks/' + track.id, 'PATCH', {title: fields.title.value, artist: fields.artist.value});
+        await api('tracks/' + track.id, 'PATCH', Object.fromEntries(
+          Object.entries(fields).map(([key, input]) => [key, input.value])
+        ));
         dialog.close();
         await refresh();
       } catch (error) { toast(error.message); }

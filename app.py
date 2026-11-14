@@ -40,6 +40,8 @@ CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created);
 CREATE TABLE IF NOT EXISTS daily_discovery (
  day TEXT NOT NULL, track_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS discovery_feedback (
+ kind TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(kind,value));
 CREATE TABLE IF NOT EXISTS listening_events (
  id INTEGER PRIMARY KEY, track_id TEXT NOT NULL, title TEXT NOT NULL,
  artist TEXT NOT NULL, played_at REAL NOT NULL);
@@ -60,6 +62,13 @@ class Store:
         self.temp.mkdir(exist_ok=True)
         with self.db() as db:
             db.executescript(SCHEMA)
+            db.execute('BEGIN IMMEDIATE')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(tracks)')}
+            for name, definition in [('genre', "TEXT NOT NULL DEFAULT ''"),
+                                     ('codec', "TEXT NOT NULL DEFAULT ''"),
+                                     ('bitrate', 'INTEGER NOT NULL DEFAULT 0')]:
+                if name not in columns:
+                    db.execute(f'ALTER TABLE tracks ADD COLUMN {name} {definition}')
         token_path = self.root / 'token'
         if not token_path.exists():
             try:
@@ -104,14 +113,19 @@ class Store:
             if existing:
                 path.unlink(missing_ok=True)
                 return None if discovery_day else existing['id']
-            if discovery_day and discovery.already_owned(db, metadata['title'], metadata['artist']):
-                return None
+            if discovery_day:
+                title, artist = metadata['title'], metadata['artist']
+                if discovery.is_blocked(db, title, artist) or discovery.already_owned(db, title, artist):
+                    return None
             track_id = uuid.uuid4().hex
             filename = track_id + path.suffix.lower()
             target = self.media / filename
             shutil.move(str(path), target)
             try:
                 db.execute('INSERT INTO tracks (id,title,artist,album,duration,filename,source,source_url,fingerprint,created) VALUES (?,?,?,?,?,?,?,?,?,?)', (track_id, str(metadata.get('title') or 'Untitled')[:300], str(metadata.get('artist') or 'Unknown artist')[:300], str(metadata.get('album') or '')[:300], float(metadata.get('duration') or 0), filename, metadata.get('source', 'local'), source_url, fingerprint, time.time()))
+                db.execute('UPDATE tracks SET genre=?,codec=?,bitrate=? WHERE id=?',
+                           (str(metadata.get('genre') or '')[:150], str(metadata.get('codec') or '')[:50],
+                            int(metadata.get('bitrate') or 0), track_id))
                 if discovery_day:
                     db.execute('INSERT INTO daily_discovery VALUES (?,?)', (discovery_day, track_id))
                     if manual:
@@ -291,7 +305,8 @@ def create_app(data_dir=None):
         with store.db() as db:
             tracks = [dict(r) for r in db.execute("""
                 SELECT t.id,t.title,t.artist,t.album,t.duration,t.source,t.source_url,
-                       t.liked,t.plays,t.last_played,t.created,d.day AS discovered_on
+                       t.liked,t.plays,t.last_played,t.created,t.genre,t.codec,t.bitrate,
+                       d.day AS discovered_on
                 FROM tracks AS t LEFT JOIN daily_discovery AS d ON d.track_id=t.id
                 ORDER BY t.created DESC
             """)]
@@ -306,15 +321,37 @@ def create_app(data_dir=None):
         with store.db() as db:
             return jsonify(store.discovery_status(db))
 
+    @app.post('/api/tracks/<track_id>/discovery-feedback')
+    def discovery_feedback(track_id):
+        kind = body().get('kind')
+        if kind not in ('song', 'artist'):
+            abort(400, 'Choose song or artist.')
+        with store.db() as db:
+            track = track_exists(db, track_id)
+            value = discovery.feedback_key(kind, track['title'], track['artist'])
+            db.execute('INSERT OR IGNORE INTO discovery_feedback VALUES (?,?)', (kind, value))
+        return jsonify(ok=True)
+
     @app.post('/api/discovery/run')
     def request_discovery():
+        data = body() if request.is_json else {}
         with store.db() as db:
             db.execute('BEGIN IMMEDIATE')
             status = store.discovery_status(db)
             if status['manual']['status'] in ('queued', 'running'):
                 return jsonify(status), 202
-            if not discovery.seeds_for(db):
+            seed_id = data.get('seed_id')
+            if seed_id is not None:
+                if not isinstance(seed_id, str):
+                    abort(400, 'Choose a valid song.')
+                seed = track_exists(db, seed_id)
+                if not discovery.artist_name(seed['artist']) or seed['artist'] in ('Unknown artist', 'YouTube'):
+                    abort(409, 'Add the artist to this song before using it for discovery.')
+                if discovery.is_blocked(db, '', seed['artist']):
+                    abort(409, 'This artist is excluded from discovery.')
+            elif not discovery.seeds_for(db):
                 abort(409, 'Add a song with a known artist before running discovery.')
+            db.execute("INSERT OR REPLACE INTO preferences VALUES ('discovery_seed',?)", (seed_id or '',))
             db.execute("INSERT OR REPLACE INTO discovery_requests VALUES (1,'queued',0,'')")
             return jsonify(store.discovery_status(db)), 202
 
@@ -339,16 +376,23 @@ def create_app(data_dir=None):
         path = store.media / row['filename']
         if not path.is_file():
             abort(404, 'The audio file is missing. Import it again.')
-        mime = {'.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac'}.get(path.suffix)
+        mime = {'.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac',
+                '.aac': 'audio/aac', '.webm': 'audio/webm'}.get(path.suffix)
         return send_file(path, mimetype=mime, conditional=True)
 
     @app.patch('/api/tracks/<track_id>')
     def update_track(track_id):
         data = body()
         fields = {}
-        for key in ('title', 'artist', 'album'):
+        for key in ('title', 'artist'):
             if key in data:
                 fields[key] = text_field(data, key)
+        for key in ('album', 'genre'):
+            if key in data:
+                value = data[key]
+                if not isinstance(value, str) or len(value) > 150:
+                    abort(400, f'Enter a valid {key}.')
+                fields[key] = value.strip()
         if 'liked' in data:
             if not isinstance(data['liked'], bool):
                 abort(400, 'liked must be true or false.')
@@ -430,6 +474,8 @@ def create_app(data_dir=None):
                 abort(400, 'This file is not readable audio.')
             tags = audio_file.tags or {}
             metadata = dict(title=(tags.get('title') or [Path(upload.filename).stem])[0], artist=(tags.get('artist') or ['Unknown artist'])[0], album=(tags.get('album') or [''])[0], duration=audio_file.info.length, source='local')
+            metadata.update(genre=(tags.get('genre') or [''])[0], codec=ext.lstrip('.'),
+                            bitrate=round((getattr(audio_file.info, 'bitrate', 0) or 0) / 1000))
             track_id = store.add_track(path, metadata)
         finally:
             path.unlink(missing_ok=True)
