@@ -8,6 +8,9 @@ let daily = null;
 let updateDailyControls;
 let queue = [], current = '', history = [], shuffle = false, repeat = 0, counted = false;
 let sleepTimer, toastTimer, importing = false;
+let sortOrder = 'default', resumeAt = null, lastSavedAt = 0;
+const playbackKey = 'muso.playback.v1';
+const trackOrder = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'});
 const trackById = id => tracks.find(track => track.id === id);
 const time = value => Number.isFinite(value) ? Math.floor(value / 60) + ':' + String(Math.floor(value % 60)).padStart(2, '0') : '0:00';
 
@@ -76,12 +79,14 @@ function form(label, placeholder, submit, action, value = '') {
 async function refresh() {
   ({tracks, playlists, discovery: daily} = await api('library'));
   if (current && !trackById(current)) {
+    current = '';
+    resumeAt = null;
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
-    current = '';
   }
   queue = queue.filter(trackById);
+  history = history.filter(trackById);
   render();
   player();
 }
@@ -89,6 +94,7 @@ async function refresh() {
 function navigate(next) {
   view = next;
   filter = '';
+  sortOrder = 'default';
   render();
   if (view === 'imports') poll().catch(error => toast(error.message));
 }
@@ -103,7 +109,7 @@ function render() {
   $('playlists').replaceChildren(...playlists.map(playlist =>
     button(playlist.name, () => navigate(playlist.id), view === playlist.id ? 'selected' : '')));
   const playlist = playlists.find(item => item.id === view);
-  $('heading').textContent = playlist?.name || ({library:'Library', liked:'Liked songs', discover:'Discover', imports:'Imports'}[view] || 'Library');
+  $('heading').textContent = playlist?.name || ({library:'Library', liked:'Liked songs', discover:'Discover', finds:'Daily Finds', imports:'Imports'}[view] || 'Library');
   $('body').replaceChildren();
   if (view === 'imports') {
     $('summary').textContent = 'Check progress and choose matches for shared links.';
@@ -127,7 +133,9 @@ function render() {
       toggle.textContent = daily.enabled ? 'Pause daily discovery' : 'Enable daily discovery';
     }
     if (daily) {
-      controls.append(node('strong', 'Daily discovery'), status, toggle);
+      const actions = node('div', undefined, 'actions');
+      actions.append(button('View Daily Finds', () => navigate('finds'), 'primary'), toggle);
+      controls.append(node('strong', 'Daily discovery'), status, actions);
       updateDaily();
       updateDailyControls = updateDaily;
       $('body').append(controls);
@@ -135,7 +143,11 @@ function render() {
     $('body').append(search, results);
     return;
   }
-  const collection = playlist ? playlist.tracks.map(trackById).filter(Boolean) : tracks.filter(track => view !== 'liked' || track.liked);
+  const collection = playlist ? playlist.tracks.map(trackById).filter(Boolean) : tracks.filter(track => {
+    if (view === 'liked') return track.liked;
+    if (view === 'finds') return track.discovered_on;
+    return true;
+  });
   $('summary').textContent = collection.length + (collection.length === 1 ? ' song saved on this device' : ' songs saved on this device');
   const toolbar = node('div', undefined, 'toolbar');
   const input = node('input');
@@ -143,24 +155,48 @@ function render() {
   input.placeholder = 'Filter songs…';
   input.setAttribute('aria-label', 'Filter songs');
   input.value = filter;
+  const sort = node('select');
+  sort.setAttribute('aria-label', 'Sort songs');
+  for (const [value, label] of [
+    ['default', playlist ? 'Playlist order' : 'Newest added'],
+    ['recent', 'Recently played'], ['plays', 'Most played'],
+    ['title', 'Song title'], ['artist', 'Artist']
+  ]) {
+    const option = node('option', label);
+    option.value = value;
+    sort.append(option);
+  }
+  sort.value = sortOrder;
+  const comparators = {
+    recent: (a, b) => (b.last_played || 0) - (a.last_played || 0),
+    plays: (a, b) => b.plays - a.plays,
+    title: (a, b) => trackOrder.compare(a.title, b.title),
+    artist: (a, b) => trackOrder.compare(a.artist, b.artist) || trackOrder.compare(a.title, b.title)
+  };
+  const playAll = button('Play all', () => { if (shown.length) start(shown, 0); });
   const list = node('div');
+  let shown = [];
   function renderList() {
-    const query = filter.toLocaleLowerCase();
-    const shown = collection.filter(t => [t.title,t.artist,t.album].some(value => value.toLocaleLowerCase().includes(query)));
+    const words = filter.toLocaleLowerCase().trim().split(/\s+/);
+    shown = collection.filter(track => {
+      const searchable = [track.title, track.artist, track.album].join(' ').toLocaleLowerCase();
+      return words.every(word => searchable.includes(word));
+    });
+    if (comparators[sortOrder]) shown.sort(comparators[sortOrder]);
+    playAll.disabled = !shown.length;
     list.replaceChildren(...shown.map((track, index) => row(track, () => start(shown, index))));
     if (!shown.length) {
       const empty = node('div', undefined, 'empty');
-      empty.append(node('strong', filter ? 'No matching songs' : 'No songs yet'), node('p', filter ? 'Try a different search.' : 'Add a link or import audio from your phone.'));
-      if (!filter) empty.append(button('Add music', addMusic, 'primary'));
+      empty.append(node('strong', filter ? 'No matching songs' : 'No songs yet'));
+      if (filter) empty.append(node('p', 'Try a different search.'));
+      else if (view === 'finds') empty.append(node('p', 'Songs saved by Daily Discovery will appear here.'), button('Back to Discover', () => navigate('discover')));
+      else empty.append(node('p', 'Add a link or import audio from your phone.'), button('Add music', addMusic, 'primary'));
       list.append(empty);
     }
   }
   input.oninput = () => { filter = input.value; renderList(); };
-  toolbar.append(input, button('Play all', () => {
-    const query = filter.toLocaleLowerCase();
-    const shown = collection.filter(t => [t.title,t.artist,t.album].some(value => value.toLocaleLowerCase().includes(query)));
-    if (shown.length) start(shown, 0);
-  }));
+  sort.onchange = () => { sortOrder = sort.value; renderList(); };
+  toolbar.append(input, sort, playAll);
   if (playlist) toolbar.append(button('Manage', () => managePlaylist(playlist)));
   $('body').append(toolbar, list);
   renderList();
@@ -170,7 +206,10 @@ function row(track, play) {
   const item = node('div', undefined, 'track');
   const song = button('', play, 'song', 'Play ' + track.title);
   const caption = node('span');
-  caption.append(node('strong', track.title), node('small', track.artist + (track.duration ? ' · ' + time(track.duration) : '')));
+  const detail = [track.artist];
+  if (track.duration) detail.push(time(track.duration));
+  if (view === 'finds') detail.push(track.discovered_on);
+  caption.append(node('strong', track.title), node('small', detail.join(' · ')));
   song.append(node('span', current === track.id ? '▶' : '♫', 'cover'), caption);
   const actions = node('div', undefined, 'actions');
   actions.append(button(track.liked ? '♥' : '♡', async () => {
@@ -186,10 +225,12 @@ function trackMenu(track) {
   const options = node('div', undefined, 'stack');
   options.append(button('Play next', () => {
     queue.unshift(track.id);
+    savePlayback();
     dialog.close();
     toast('Added to play next');
   }), button('Add to end of queue', () => {
     queue.push(track.id);
+    savePlayback();
     dialog.close();
     toast('Added to queue');
   }));
@@ -366,13 +407,44 @@ function start(collection, index) {
   playTrack(collection[index].id);
 }
 
+function savePlayback() {
+  const position = resumeAt ?? (audio.ended ? 0 : audio.currentTime);
+  try {
+    localStorage.setItem(playbackKey, JSON.stringify({
+      current, queue, history: history.slice(-100), position, shuffle, repeat
+    }));
+    lastSavedAt = Date.now();
+  } catch { /* Playback still works with browser storage disabled. */ }
+}
+
+function restorePlayback() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(playbackKey)); }
+  catch { return; }
+  if (!saved) return;
+  queue = Array.isArray(saved.queue) ? saved.queue.filter(trackById) : [];
+  history = Array.isArray(saved.history) ? saved.history.filter(trackById) : [];
+  shuffle = saved.shuffle === true;
+  repeat = [0, 1, 2].includes(saved.repeat) ? saved.repeat : 0;
+  updatePlaybackModes();
+  if (trackById(saved.current)) {
+    current = saved.current;
+    counted = true;
+    resumeAt = Number.isFinite(saved.position) ? Math.max(0, saved.position) : 0;
+    audio.src = '/api/tracks/' + current + '/audio';
+  }
+  player();
+}
+
 function playTrack(id, recordHistory = true) {
   const track = trackById(id);
   if (!track) return;
   if (recordHistory && current && current !== id) history.push(current);
   current = id;
   counted = false;
+  resumeAt = null;
   audio.src = '/api/tracks/' + id + '/audio';
+  savePlayback();
   player();
   audio.play().catch(() => toast('Tap play to start audio.'));
 }
@@ -387,6 +459,7 @@ function advance(ended = false) {
   if (!queue.length) {
     if (!ended) toast('No more songs in the queue');
     player();
+    savePlayback();
     return;
   }
   const index = shuffle ? Math.floor(Math.random() * queue.length) : 0;
@@ -439,10 +512,15 @@ function queueDialog() {
     if (!next) return;
     const actions = node('div', undefined, 'actions');
     actions.append(button(next.title, () => { queue.splice(index, 1); playTrack(id); queueDialog(); }),
-      button('Remove', () => { queue.splice(index, 1); queueDialog(); }));
+      button('Remove', () => { queue.splice(index, 1); savePlayback(); queueDialog(); }));
+    if (index > 0) actions.append(button('Move to next', () => {
+      queue.unshift(queue.splice(index, 1)[0]);
+      savePlayback();
+      queueDialog();
+    }, undefined, 'Move ' + next.title + ' to next'));
     content.append(actions);
   });
-  if (queue.length) content.append(button('Clear queue', () => { queue = []; queueDialog(); }));
+  if (queue.length) content.append(button('Clear queue', () => { queue = []; savePlayback(); queueDialog(); }));
   modal('Play queue', content);
 }
 
@@ -459,18 +537,24 @@ $('play').onclick = toggle;
 $('next').onclick = () => advance();
 $('prev').onclick = previous;
 $('queue').onclick = $('now').onclick = queueDialog;
-$('shuffle').onclick = () => {
-  shuffle = !shuffle;
+function updatePlaybackModes() {
   $('shuffle').classList.toggle('on', shuffle);
   $('shuffle').setAttribute('aria-pressed', shuffle);
-};
-$('repeat').onclick = () => {
-  repeat = (repeat + 1) % 3;
   const label = ['Repeat off','Repeat queue','Repeat song'][repeat];
   $('repeat').textContent = repeat === 2 ? '↻¹' : '↻';
   $('repeat').classList.toggle('on', repeat > 0);
   $('repeat').title = label;
   $('repeat').setAttribute('aria-label', label);
+}
+$('shuffle').onclick = () => {
+  shuffle = !shuffle;
+  updatePlaybackModes();
+  savePlayback();
+};
+$('repeat').onclick = () => {
+  repeat = (repeat + 1) % 3;
+  updatePlaybackModes();
+  savePlayback();
 };
 $('sleep').onclick = () => {
   const options = node('div', undefined, 'actions');
@@ -492,14 +576,28 @@ $('seek').oninput = event => {
   if (Number.isFinite(audio.duration)) audio.currentTime = Number(event.target.value) * audio.duration / 100;
 };
 audio.onended = () => advance(true);
-audio.onpause = player;
+audio.onpause = () => { player(); savePlayback(); };
 audio.onplay = player;
-audio.onloadedmetadata = position;
+audio.onloadedmetadata = () => {
+  if (resumeAt !== null) {
+    if (Number.isFinite(audio.duration) && resumeAt < audio.duration) audio.currentTime = resumeAt;
+    resumeAt = null;
+  }
+  position();
+};
+audio.onseeked = savePlayback;
 audio.ontimeupdate = () => {
   position();
+  if (!audio.paused && Date.now() - lastSavedAt > 3000) savePlayback();
   if (!counted && current && audio.currentTime >= Math.min(5, audio.duration / 2)) {
     counted = true;
-    api('tracks/' + current + '/played', 'POST').catch(() => {});
+    const played = trackById(current);
+    api('tracks/' + current + '/played', 'POST').then(() => {
+      if (played) {
+        played.plays++;
+        played.last_played = Date.now() / 1000;
+      }
+    }).catch(() => {});
   }
 };
 audio.onerror = () => { if (current) toast('This browser could not read the saved audio.'); };
@@ -511,7 +609,13 @@ if ('mediaSession' in navigator) {
 
 const fromShare = new URLSearchParams(location.search).has('imports');
 if (fromShare) view = 'imports';
-refresh().then(poll).catch(error => toast(error.message));
+refresh().then(() => {
+  restorePlayback();
+  return poll();
+}).catch(error => toast(error.message));
+window.addEventListener('pagehide', () => {
+  if (current || queue.length) savePlayback();
+});
 setInterval(() => {
   if (document.visibilityState === 'visible') poll().catch(() => {});
 }, 3500);

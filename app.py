@@ -232,7 +232,12 @@ def create_app(data_dir=None):
     @app.get('/api/library')
     def library():
         with store.db() as db:
-            tracks = [dict(r) for r in db.execute('SELECT id,title,artist,album,duration,source,source_url,liked,plays,last_played,created FROM tracks ORDER BY created DESC')]
+            tracks = [dict(r) for r in db.execute("""
+                SELECT t.id,t.title,t.artist,t.album,t.duration,t.source,t.source_url,
+                       t.liked,t.plays,t.last_played,t.created,d.day AS discovered_on
+                FROM tracks AS t LEFT JOIN daily_discovery AS d ON d.track_id=t.id
+                ORDER BY t.created DESC
+            """)]
             playlists = [dict(r) for r in db.execute('SELECT * FROM playlists ORDER BY created')]
             for playlist in playlists:
                 playlist['tracks'] = [r[0] for r in db.execute('SELECT track_id FROM playlist_tracks WHERE playlist_id=? ORDER BY position', (playlist['id'],))]
