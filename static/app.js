@@ -9,6 +9,9 @@ let updateDailyControls;
 let queue = [], current = '', history = [], shuffle = false, repeat = 0, counted = false;
 let sleepTimer, toastTimer, importing = false;
 let sortOrder = 'default', resumeAt = null, lastSavedAt = 0;
+let playedSeconds = 0, lastAudioTime = 0;
+const recapMonth = new Date();
+recapMonth.setDate(1);
 const playbackKey = 'muso.playback.v1';
 const trackOrder = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'});
 const trackById = id => tracks.find(track => track.id === id);
@@ -99,6 +102,64 @@ function navigate(next) {
   if (view === 'imports') poll().catch(error => toast(error.message));
 }
 
+function renderRecap() {
+  const month = recapMonth.getFullYear() + '-' + String(recapMonth.getMonth() + 1).padStart(2, '0');
+  const title = recapMonth.toLocaleDateString(undefined, {month: 'long', year: 'numeric'});
+  $('summary').textContent = title;
+  const controls = node('div', undefined, 'toolbar');
+  const step = direction => {
+    recapMonth.setMonth(recapMonth.getMonth() + direction);
+    renderRecap();
+  };
+  const forward = button('Next month →', () => step(1));
+  const now = new Date();
+  forward.disabled = recapMonth >= new Date(now.getFullYear(), now.getMonth(), 1);
+  controls.append(button('← Previous month', () => step(-1)), forward);
+  const content = node('div', 'Loading recap…', 'recap-content');
+  content.setAttribute('aria-live', 'polite');
+  $('body').replaceChildren(controls, content);
+  api('recap?month=' + month).then(data => {
+    if (!data.plays) {
+      content.replaceChildren(node('p', 'No plays recorded for this month yet.', 'empty'));
+      return;
+    }
+    const stats = node('div', undefined, 'recap-stats');
+    for (const [value, label] of [[data.plays, 'Plays'], [data.songs, 'Songs'], [data.artists, 'Artists']]) {
+      const card = node('div', undefined, 'card');
+      card.append(node('strong', value.toLocaleString()), node('span', label));
+      stats.append(card);
+    }
+    const artistList = node('ol', undefined, 'recap-ranks');
+    for (const artist of data.top_artists) {
+      const entry = node('li');
+      const bar = node('progress');
+      bar.max = data.top_artists[0].plays;
+      bar.value = artist.plays;
+      bar.setAttribute('aria-label', artist.artist + ' plays');
+      entry.append(node('span', artist.artist), node('small', artist.plays + ' plays'), bar);
+      artistList.append(entry);
+    }
+    const songList = node('ol', undefined, 'recap-ranks');
+    for (const track of data.top_tracks) {
+      const entry = node('li');
+      const title = track.title + ' · ' + track.artist;
+      entry.append(track.available ? button(title, () => playTrack(track.id), 'quiet') : node('span', title),
+        node('small', track.plays + ' plays'));
+      songList.append(entry);
+    }
+    const available = data.top_tracks.filter(track => track.available).map(track => track.id);
+    content.replaceChildren(stats, node('h2', 'Top songs'), songList, node('h2', 'Top artists'), artistList);
+    if (available.length) {
+      const save = button('Save top songs as a playlist', async () => {
+        const result = await api('playlists', 'POST', {name: title + ' Recap', tracks: available});
+        navigate(result.id);
+        await refresh();
+      }, 'primary');
+      content.append(save);
+    }
+  }).catch(error => { content.textContent = error.message; });
+}
+
 function render() {
   updateDailyControls = null;
   for (const tab of document.querySelectorAll('[data-view]')) {
@@ -109,8 +170,12 @@ function render() {
   $('playlists').replaceChildren(...playlists.map(playlist =>
     button(playlist.name, () => navigate(playlist.id), view === playlist.id ? 'selected' : '')));
   const playlist = playlists.find(item => item.id === view);
-  $('heading').textContent = playlist?.name || ({library:'Library', liked:'Liked songs', discover:'Discover', finds:'Daily Finds', imports:'Imports'}[view] || 'Library');
+  $('heading').textContent = playlist?.name || ({library:'Library', liked:'Liked songs', discover:'Discover', finds:'Daily Finds', imports:'Imports', recap:'Monthly Recap'}[view] || 'Library');
   $('body').replaceChildren();
+  if (view === 'recap') {
+    renderRecap();
+    return;
+  }
   if (view === 'imports') {
     $('summary').textContent = 'Check progress and choose matches for shared links.';
     renderJobs();
@@ -216,9 +281,25 @@ function render() {
   input.oninput = () => { filter = input.value; renderList(); };
   sort.onchange = () => { sortOrder = sort.value; renderList(); };
   toolbar.append(input, sort, playAll);
-  if (playlist) toolbar.append(button('Manage', () => managePlaylist(playlist)));
+  if (playlist) {
+    toolbar.append(button('Edit playlist', () => managePlaylist(playlist), undefined, 'Edit ' + playlist.name));
+    toolbar.append(button('Queue playlist', () => {
+      queue.push(...playlist.tracks.filter(trackById));
+      savePlayback();
+      player();
+      toast('Playlist added to the queue');
+    }));
+  }
   $('body').append(toolbar, list);
   renderList();
+}
+
+function coverArt(element, track) {
+  let hue = 0;
+  for (const character of track?.id || '') hue = (hue * 31 + character.charCodeAt(0)) % 360;
+  element.style.setProperty('--art-hue', hue + 'deg');
+  element.textContent = '';
+  element.setAttribute('aria-hidden', 'true');
 }
 
 function row(track, play) {
@@ -229,7 +310,9 @@ function row(track, play) {
   if (track.duration) detail.push(time(track.duration));
   if (view === 'finds') detail.push(track.discovered_on);
   caption.append(node('strong', track.title), node('small', detail.join(' · ')));
-  song.append(node('span', current === track.id ? '▶' : '♫', 'cover'), caption);
+  const cover = node('span', '', 'cover');
+  coverArt(cover, track);
+  song.append(cover, caption);
   const actions = node('div', undefined, 'actions');
   actions.append(button(track.liked ? '♥' : '♡', async () => {
     await api('tracks/' + track.id, 'PATCH', {liked: !track.liked});
@@ -245,23 +328,30 @@ function trackMenu(track) {
   options.append(button('Play next', () => {
     queue.unshift(track.id);
     savePlayback();
+    player();
     dialog.close();
     toast('Added to play next');
   }), button('Add to end of queue', () => {
     queue.push(track.id);
     savePlayback();
+    player();
     dialog.close();
     toast('Added to queue');
   }));
-  for (const playlist of playlists) {
-    const included = playlist.tracks.includes(track.id);
-    options.append(button((included ? 'Remove from ' : 'Add to ') + playlist.name, async () => {
-      const ids = included ? playlist.tracks.filter(id => id !== track.id) : [...playlist.tracks, track.id];
-      await api('playlists/' + playlist.id, 'PATCH', {tracks: ids});
-      dialog.close();
-      await refresh();
-    }));
-  }
+  options.append(button('Loop this song', () => {
+    setRepeat(2);
+    if (current !== track.id) playTrack(track.id);
+    else if (audio.paused) toggle();
+    dialog.close();
+  }), button('Add to playlist…', () => choosePlaylist(track)));
+  const openPlaylist = playlists.find(item => item.id === view && item.tracks.includes(track.id));
+  if (openPlaylist) options.append(button('Remove from this playlist', async () => {
+    await api('playlists/' + openPlaylist.id, 'PATCH', {
+      tracks: openPlaylist.tracks.filter(id => id !== track.id), expected_tracks: openPlaylist.tracks
+    });
+    dialog.close();
+    await refresh();
+  }));
   options.append(button('Edit details', () => {
     const edit = node('form', undefined, 'stack');
     const fields = {};
@@ -285,9 +375,7 @@ function trackMenu(track) {
     };
     modal('Edit song', edit);
   }));
-  const link = node('a', 'Download audio file');
-  link.href = '/api/tracks/' + track.id + '/audio?download=1';
-  options.append(link, button('Delete song', async () => {
+  options.append(button('Delete from library', async () => {
     if (!confirm('Delete this saved audio from Muso?')) return;
     await api('tracks/' + track.id, 'DELETE');
     dialog.close();
@@ -296,18 +384,102 @@ function trackMenu(track) {
   modal(track.title, options);
 }
 
-function managePlaylist(playlist) {
-  modal('Manage playlist', form('Playlist name', 'Playlist name', 'Rename', async name => {
-    await api('playlists/' + playlist.id, 'PATCH', {name});
+function choosePlaylist(track) {
+  const options = node('div', undefined, 'stack');
+  for (const playlist of playlists) {
+    const included = playlist.tracks.includes(track.id);
+    const choice = button(playlist.name + (included ? ' ✓' : ''), async () => {
+      await api('playlists/' + playlist.id, 'PATCH', {
+        tracks: [...playlist.tracks, track.id], expected_tracks: playlist.tracks
+      });
+      dialog.close();
+      await refresh();
+      toast('Added to ' + playlist.name);
+    });
+    choice.disabled = included;
+    options.append(choice);
+  }
+  options.append(form('New playlist name', 'New playlist name', 'Create & add', async name => {
+    await api('playlists', 'POST', {name, tracks: [track.id]});
     dialog.close();
     await refresh();
-  }, playlist.name), button('Delete playlist', async () => {
+    toast('Added to ' + name);
+  }));
+  modal('Add to playlist', options);
+}
+
+function orderedTracks(container, ids, onChange, play) {
+  const rows = document.createDocumentFragment();
+  let dragged = null;
+  ids.forEach((id, index) => {
+    const track = trackById(id);
+    if (!track) return;
+    const entry = node('div', undefined, 'ordered-track');
+    const label = play ? button(track.title, () => play(id, index), 'ordered-title') : node('span', track.title, 'ordered-title');
+    const controls = node('div', undefined, 'actions');
+    const move = destination => {
+      if (destination === index) return;
+      ids.splice(destination, 0, ids.splice(index, 1)[0]);
+      onChange();
+    };
+    const up = button('↑', () => move(index - 1), 'icon', 'Move ' + track.title + ' up');
+    const down = button('↓', () => move(index + 1), 'icon', 'Move ' + track.title + ' down');
+    up.disabled = index === 0;
+    down.disabled = index === ids.length - 1;
+    controls.append(up, down, button('✕', () => {
+      ids.splice(index, 1);
+      onChange();
+    }, 'icon', 'Remove ' + track.title));
+    entry.draggable = true;
+    entry.ondragstart = event => {
+      dragged = index;
+      event.dataTransfer.setData('text/plain', String(index));
+      event.dataTransfer.effectAllowed = 'move';
+    };
+    entry.ondragend = () => { dragged = null; };
+    entry.ondragover = event => { if (dragged !== null) event.preventDefault(); };
+    entry.ondrop = event => {
+      event.preventDefault();
+      if (dragged === null || dragged === index) return;
+      ids.splice(index, 0, ids.splice(dragged, 1)[0]);
+      onChange();
+    };
+    entry.append(label, controls);
+    rows.append(entry);
+  });
+  container.replaceChildren(rows);
+}
+
+function managePlaylist(playlist) {
+  const draft = [...playlist.tracks];
+  const rows = node('div');
+  const renderDraft = () => orderedTracks(rows, draft, renderDraft);
+  renderDraft();
+  const save = form('Playlist name', 'Playlist name', 'Save playlist', async name => {
+    await api('playlists/' + playlist.id, 'PATCH', {name, tracks: draft, expected_tracks: playlist.tracks});
+    dialog.close();
+    sortOrder = 'default';
+    await refresh();
+  }, playlist.name);
+  const actions = node('div', undefined, 'actions');
+  actions.append(button('Duplicate playlist', async () => {
+    const suffix = ' (copy)';
+    const result = await api('playlists', 'POST', {
+      name: playlist.name.slice(0, 80 - suffix.length) + suffix, tracks: draft
+    });
+    dialog.close();
+    view = result.id;
+    filter = '';
+    sortOrder = 'default';
+    await refresh();
+  }), button('Delete playlist', async () => {
     if (!confirm('Delete this playlist? Its songs will remain in your library.')) return;
     await api('playlists/' + playlist.id, 'DELETE');
     dialog.close();
     view = 'library';
     await refresh();
   }));
+  modal('Edit playlist', save, node('p', 'Drag on desktop or use the arrows to reorder. Save to keep your changes.', 'muted'), rows, actions);
 }
 
 async function importLink(url, job) {
@@ -422,15 +594,23 @@ async function poll() {
 
 function start(collection, index) {
   queue = collection.slice(index + 1).map(track => track.id);
+  if (shuffle) shuffleQueue();
   history = [];
   playTrack(collection[index].id);
+}
+
+function shuffleQueue() {
+  for (let index = queue.length - 1; index > 0; index--) {
+    const other = Math.floor(Math.random() * (index + 1));
+    [queue[index], queue[other]] = [queue[other], queue[index]];
+  }
 }
 
 function savePlayback() {
   const position = resumeAt ?? (audio.ended ? 0 : audio.currentTime);
   try {
     localStorage.setItem(playbackKey, JSON.stringify({
-      current, queue, history: history.slice(-100), position, shuffle, repeat
+      current, queue, history: history.slice(-100), position, shuffle, repeat, counted
     }));
     lastSavedAt = Date.now();
   } catch { /* Playback still works with browser storage disabled. */ }
@@ -448,7 +628,7 @@ function restorePlayback() {
   updatePlaybackModes();
   if (trackById(saved.current)) {
     current = saved.current;
-    counted = true;
+    counted = saved.counted ?? true;
     resumeAt = Number.isFinite(saved.position) ? Math.max(0, saved.position) : 0;
     audio.src = '/api/tracks/' + current + '/audio';
   }
@@ -461,15 +641,21 @@ function playTrack(id, recordHistory = true) {
   if (recordHistory && current && current !== id) history.push(current);
   current = id;
   counted = false;
+  playedSeconds = 0;
+  lastAudioTime = 0;
   resumeAt = null;
   audio.src = '/api/tracks/' + id + '/audio';
   savePlayback();
   player();
   audio.play().catch(() => toast('Tap play to start audio.'));
+  if (dialog.open && $('dialog-title').textContent === 'Play queue') queueDialog();
 }
 
 function advance(ended = false) {
   if (ended && repeat === 2 && current) {
+    counted = false;
+    playedSeconds = 0;
+    lastAudioTime = 0;
     audio.currentTime = 0;
     audio.play().catch(() => {});
     return;
@@ -481,8 +667,7 @@ function advance(ended = false) {
     savePlayback();
     return;
   }
-  const index = shuffle ? Math.floor(Math.random() * queue.length) : 0;
-  playTrack(queue.splice(index, 1)[0]);
+  playTrack(queue.shift());
 }
 
 function previous() {
@@ -505,10 +690,12 @@ function toggle() {
 
 function player() {
   const track = trackById(current);
+  coverArt($('now-cover'), track);
   $('now-title').textContent = track?.title || 'Nothing playing';
   $('now-artist').textContent = track?.artist || (queue.length ? queue.length + ' songs queued' : 'Your queue is empty');
   $('play').textContent = audio.paused ? '▶' : '⏸';
   $('play').setAttribute('aria-label', audio.paused ? 'Play' : 'Pause');
+  $('queue').textContent = queue.length ? 'Queue · ' + queue.length : 'Queue';
   if ('mediaSession' in navigator && track) {
     navigator.mediaSession.metadata = new MediaMetadata({title: track.title, artist: track.artist, album: track.album});
     navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
@@ -524,22 +711,27 @@ function position() {
 function queueDialog() {
   const content = node('div', undefined, 'stack');
   const track = trackById(current);
-  if (track) content.append(node('p', 'Now playing · ' + track.title));
+  if (track) {
+    content.append(node('p', 'Now playing · ' + track.title), button(
+      repeat === 2 ? 'Stop looping song' : 'Loop current song', () => {
+        setRepeat(repeat === 2 ? 0 : 2);
+        queueDialog();
+      }
+    ));
+  }
   if (!queue.length) content.append(node('p','The queue is empty.'));
-  queue.forEach((id, index) => {
-    const next = trackById(id);
-    if (!next) return;
-    const actions = node('div', undefined, 'actions');
-    actions.append(button(next.title, () => { queue.splice(index, 1); playTrack(id); queueDialog(); }),
-      button('Remove', () => { queue.splice(index, 1); savePlayback(); queueDialog(); }));
-    if (index > 0) actions.append(button('Move to next', () => {
-      queue.unshift(queue.splice(index, 1)[0]);
-      savePlayback();
-      queueDialog();
-    }, undefined, 'Move ' + next.title + ' to next'));
-    content.append(actions);
-  });
-  if (queue.length) content.append(button('Clear queue', () => { queue = []; savePlayback(); queueDialog(); }));
+  if (queue.length) {
+    const rows = node('div');
+    const changed = () => { savePlayback(); player(); queueDialog(); };
+    orderedTracks(rows, queue, changed, (id, index) => {
+      queue.splice(index, 1);
+      playTrack(id);
+    });
+    content.append(rows, button('Clear queue', () => {
+      queue = [];
+      changed();
+    }));
+  }
   modal('Play queue', content);
 }
 
@@ -567,13 +759,26 @@ function updatePlaybackModes() {
 }
 $('shuffle').onclick = () => {
   shuffle = !shuffle;
+  if (shuffle) shuffleQueue();
   updatePlaybackModes();
   savePlayback();
 };
-$('repeat').onclick = () => {
-  repeat = (repeat + 1) % 3;
+function setRepeat(mode) {
+  repeat = mode;
   updatePlaybackModes();
   savePlayback();
+}
+$('repeat').onclick = () => {
+  const options = node('div', undefined, 'stack');
+  for (const [mode, label] of ['Off', 'Repeat queue', 'Loop current song'].entries()) {
+    const choice = button(label + (repeat === mode ? ' ✓' : ''), () => {
+      setRepeat(mode);
+      dialog.close();
+    }, repeat === mode ? 'primary' : undefined);
+    choice.setAttribute('aria-pressed', repeat === mode);
+    options.append(choice);
+  }
+  modal('Repeat', options);
 };
 $('sleep').onclick = () => {
   const options = node('div', undefined, 'actions');
@@ -604,11 +809,14 @@ audio.onloadedmetadata = () => {
   }
   position();
 };
-audio.onseeked = savePlayback;
+audio.onseeked = () => { lastAudioTime = audio.currentTime; savePlayback(); };
 audio.ontimeupdate = () => {
   position();
   if (!audio.paused && Date.now() - lastSavedAt > 3000) savePlayback();
-  if (!counted && current && audio.currentTime >= Math.min(5, audio.duration / 2)) {
+  const elapsed = audio.currentTime - lastAudioTime;
+  lastAudioTime = audio.currentTime;
+  if (!audio.paused && !audio.seeking && elapsed > 0 && elapsed <= 2) playedSeconds += elapsed;
+  if (!counted && current && playedSeconds >= Math.min(5, audio.duration / 2)) {
     counted = true;
     const played = trackById(current);
     api('tracks/' + current + '/played', 'POST').then(() => {

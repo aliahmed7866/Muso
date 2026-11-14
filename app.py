@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -40,6 +40,10 @@ CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created);
 CREATE TABLE IF NOT EXISTS daily_discovery (
  day TEXT NOT NULL, track_id TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS listening_events (
+ id INTEGER PRIMARY KEY, track_id TEXT NOT NULL, title TEXT NOT NULL,
+ artist TEXT NOT NULL, played_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS listening_events_month ON listening_events(played_at);
 CREATE TABLE IF NOT EXISTS discovery_requests (
  id INTEGER PRIMARY KEY CHECK (id=1), status TEXT NOT NULL,
  added INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '');
@@ -260,6 +264,16 @@ def create_app(data_dir=None):
             abort(404, 'Track not found.')
         return row
 
+    def set_playlist_tracks(db, playlist_id, ids):
+        if (not isinstance(ids, list) or len(ids) > 10000
+                or any(not isinstance(item, str) for item in ids) or len(set(ids)) != len(ids)):
+            abort(400, 'Expected a list of unique track IDs.')
+        for track_id in ids:
+            track_exists(db, track_id)
+        db.execute('DELETE FROM playlist_tracks WHERE playlist_id=?', (playlist_id,))
+        db.executemany('INSERT INTO playlist_tracks VALUES (?,?,?)',
+                       [(playlist_id, track_id, position) for position, track_id in enumerate(ids)])
+
     @app.get('/')
     def index():
         return render_template('index.html', token=store.token)
@@ -326,7 +340,7 @@ def create_app(data_dir=None):
         if not path.is_file():
             abort(404, 'The audio file is missing. Import it again.')
         mime = {'.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac'}.get(path.suffix)
-        return send_file(path, mimetype=mime, conditional=True, as_attachment=request.args.get('download') == '1', download_name=row['title'] + path.suffix)
+        return send_file(path, mimetype=mime, conditional=True)
 
     @app.patch('/api/tracks/<track_id>')
     def update_track(track_id):
@@ -348,9 +362,46 @@ def create_app(data_dir=None):
     @app.post('/api/tracks/<track_id>/played')
     def played(track_id):
         with store.db() as db:
-            track_exists(db, track_id)
-            db.execute('UPDATE tracks SET plays=plays+1,last_played=? WHERE id=?', (time.time(), track_id))
+            db.execute('BEGIN IMMEDIATE')
+            track = track_exists(db, track_id)
+            now = time.time()
+            db.execute('UPDATE tracks SET plays=plays+1,last_played=? WHERE id=?', (now, track_id))
+            db.execute('INSERT INTO listening_events (track_id,title,artist,played_at) VALUES (?,?,?,?)',
+                       (track_id, track['title'], track['artist'], now))
         return jsonify(ok=True)
+
+    @app.get('/api/recap')
+    def recap():
+        month = request.args.get('month', date.today().strftime('%Y-%m'))
+        try:
+            start = datetime.strptime(month, '%Y-%m')
+            if start.strftime('%Y-%m') != month:
+                raise ValueError
+            end = start.replace(year=start.year + (start.month == 12), month=start.month % 12 + 1)
+            bounds = (start.timestamp(), end.timestamp())
+        except (ValueError, OverflowError, OSError):
+            abort(400, 'Use a month in YYYY-MM format.')
+        with store.db() as db:
+            db.execute('BEGIN')
+            totals = dict(db.execute("""
+                SELECT count(*) AS plays, count(DISTINCT track_id) AS songs,
+                       count(DISTINCT artist COLLATE NOCASE) AS artists
+                FROM listening_events WHERE played_at>=? AND played_at<?
+            """, bounds).fetchone())
+            top_tracks = [dict(row) for row in db.execute("""
+                SELECT e.track_id AS id, coalesce(t.title,max(e.title)) AS title,
+                       coalesce(t.artist,max(e.artist)) AS artist, count(*) AS plays,
+                       t.id IS NOT NULL AS available
+                FROM listening_events AS e LEFT JOIN tracks AS t ON e.track_id=t.id
+                WHERE e.played_at>=? AND e.played_at<?
+                GROUP BY e.track_id ORDER BY plays DESC, title COLLATE NOCASE, e.track_id LIMIT 10
+            """, bounds)]
+            top_artists = [dict(row) for row in db.execute("""
+                SELECT min(artist) AS artist,count(*) AS plays FROM listening_events
+                WHERE played_at>=? AND played_at<? GROUP BY artist COLLATE NOCASE
+                ORDER BY plays DESC, artist COLLATE NOCASE LIMIT 5
+            """, bounds)]
+        return jsonify(**totals, month=month, top_tracks=top_tracks, top_artists=top_artists)
 
     @app.delete('/api/tracks/<track_id>')
     def delete_track(track_id):
@@ -386,31 +437,33 @@ def create_app(data_dir=None):
 
     @app.post('/api/playlists')
     def create_playlist():
-        name = text_field(body(), 'name', 80)
+        data = body()
+        name = text_field(data, 'name', 80)
         playlist_id = uuid.uuid4().hex
         with store.db() as db:
             db.execute('INSERT INTO playlists VALUES (?,?,?)', (playlist_id, name, time.time()))
+            if 'tracks' in data:
+                set_playlist_tracks(db, playlist_id, data['tracks'])
         return jsonify(id=playlist_id), 201
 
     @app.route('/api/playlists/<playlist_id>', methods=['PATCH', 'DELETE'])
     def playlist(playlist_id):
         with store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT id FROM playlists WHERE id=?', (playlist_id,)).fetchone():
                 abort(404, 'Playlist not found.')
             if request.method == 'DELETE':
                 db.execute('DELETE FROM playlists WHERE id=?', (playlist_id,))
             else:
                 data = body()
+                if 'expected_tracks' in data:
+                    current = [r[0] for r in db.execute('SELECT track_id FROM playlist_tracks WHERE playlist_id=? ORDER BY position', (playlist_id,))]
+                    if current != data['expected_tracks']:
+                        abort(409, 'This playlist changed. Reopen the editor and try again.')
                 if 'name' in data:
                     db.execute('UPDATE playlists SET name=? WHERE id=?', (text_field(data, 'name', 80), playlist_id))
                 if 'tracks' in data:
-                    ids = data['tracks']
-                    if not isinstance(ids, list) or len(ids) > 10000 or any(not isinstance(x, str) for x in ids) or len(set(ids)) != len(ids):
-                        abort(400, 'Expected a list of unique track IDs.')
-                    for track_id in ids:
-                        track_exists(db, track_id)
-                    db.execute('DELETE FROM playlist_tracks WHERE playlist_id=?', (playlist_id,))
-                    db.executemany('INSERT INTO playlist_tracks VALUES (?,?,?)', [(playlist_id, tid, pos) for pos, tid in enumerate(ids)])
+                    set_playlist_tracks(db, playlist_id, data['tracks'])
         return jsonify(ok=True)
 
     @app.get('/api/jobs')

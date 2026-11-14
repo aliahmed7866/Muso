@@ -20,7 +20,15 @@ Tap **Discover → Discover Now** or run `~/bin/muso discover`. Each request sea
 
 - **YouTube and SoundCloud:** Paste a full song or video URL under **Add music**, or use Android **Share → Termux**. Muso saves downloadable audio through yt-dlp. Import recordings you have permission to save.
 - **Spotify:** Share an individual track. Under **Imports**, choose a YouTube recording to save. If the suggestions are off, search by title and artist or paste the correct YouTube link. Spotify downloads and playlist URLs are unsupported.
-- **Phone files:** Choose **Add music → Import audio files**. Files are copied into Muso, so the originals stay where they are. In a song's menu, choose **Download audio file** to export a copy.
+- **Phone files:** Choose **Add music → Import audio files**. Files are copied into Muso, so the originals stay where they are.
+
+## Playlists, queue, and recap
+
+Open a playlist and tap **Edit playlist** to rename, reorder, remove songs, or duplicate it. Use the arrows on touchscreens or drag rows on desktop. **Queue playlist** adds the playlist in its saved order.
+
+Tap the repeat button to choose **Off**, **Repeat queue**, or **Loop current song**. The song menu also has a **Loop this song** shortcut. Open **Queue** to reorder or remove upcoming songs.
+
+**Recap** shows monthly plays, unique songs and artists, and your top songs and artists. Use the month buttons to look back, or save that month's top songs as a playlist. Monthly history begins with this update. Earlier play totals remain available for library sorting.
 
 If Termux already has a `~/bin/termux-url-opener`, the installer preserves it. Add an explicit call to `"$HOME/bin/muso" share "$1"` in the appropriate branch of your existing handler, or paste links into Muso.
 

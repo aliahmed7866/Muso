@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+  <defs>
+    <linearGradient id="sleeve" x2="100%" y2="100%">
+      <stop stop-color="#9f62ff"/>
+      <stop offset=".48" stop-color="#492783"/>
+      <stop offset="1" stop-color="#140e31"/>
+    </linearGradient>
+    <radialGradient id="vinyl">
+      <stop stop-color="#47466a"/>
+      <stop offset="1" stop-color="#111019"/>
+    </radialGradient>
+  </defs>
+  <rect width="160" height="160" rx="24" fill="url(#sleeve)"/>
+  <path d="M0 124C44 75 101 160 160 83v77H0z" fill="#ff6ba7" opacity=".65"/>
+  <path d="M0 45C55 5 104 73 160 27M0 57C55 17 104 85 160 39" fill="none" stroke="#ffb2d1" stroke-width="2" opacity=".7"/>
+  <circle cx="80" cy="82" r="54" fill="url(#vinyl)"/>
+  <g fill="none" stroke="#aaa3cc" opacity=".45">
+    <circle cx="80" cy="82" r="47"/><circle cx="80" cy="82" r="41"/>
+    <circle cx="80" cy="82" r="35"/><circle cx="80" cy="82" r="29"/>
+  </g>
+  <circle cx="80" cy="82" r="21" fill="#d6fb78"/>
+  <path d="M66 83h5l4-9 5 16 5-19 5 12h4" fill="none" stroke="#242c13" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M119 17v22m-11-11h22M34 126v13m-6.5-6.5h13" stroke="#fff0f9" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
