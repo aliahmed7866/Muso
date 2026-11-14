@@ -59,3 +59,21 @@ footer{position:fixed;z-index:2;bottom:0;left:0;right:0;background:#202128;borde
 @media (max-width: 480px) {
   aside nav { flex-basis: 100%; justify-content: space-between; order: 2; }
 }
+.mix-shelf { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.mix-card { display: grid; align-content: start; gap: 8px; text-align: left; padding: 16px; border: 1px solid var(--line); background: linear-gradient(140deg, #343044, var(--panel)); }
+.mix-card:nth-child(2) { background: linear-gradient(140deg, #263e38, var(--panel)); }
+.mix-card:nth-child(3) { background: linear-gradient(140deg, #42342d, var(--panel)); }
+.mix-card:nth-child(4) { background: linear-gradient(140deg, #283851, var(--panel)); }
+.mix-card.active { border-color: var(--lime); box-shadow: inset 0 0 0 1px var(--lime); }
+.mix-card span { font-size: 12px; color: var(--lime); }
+.mix-card small { line-height: 1.4; }
+.results-count { font-size: 13px; margin: 12px 0 6px; }
+.selection-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; margin-block: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.selection-bar[hidden] { display: none; }
+.selection-bar strong { flex-basis: 100%; color: var(--lime); }
+.track.selectable { grid-template-columns: 36px minmax(0, 1fr) auto; }
+.track input[type=checkbox] { width: 24px; height: 24px; justify-self: center; accent-color: var(--lime); cursor: pointer; }
+.track.playing { background: #d6fb780a; box-shadow: inset 3px 0 var(--lime); border-radius: 8px; }
+.track.playing .song strong { color: var(--lime); }
+@media (max-width: 900px) { .mix-shelf { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .mix-card { padding: 12px; } .track.selectable .cover { display: none; } }
