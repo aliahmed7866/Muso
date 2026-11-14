@@ -2,6 +2,7 @@
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -10,6 +11,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,6 +19,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 import mutagen
 import importer
+import discovery
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS tracks (
@@ -34,6 +37,9 @@ CREATE TABLE IF NOT EXISTS jobs (
  title TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '', candidates TEXT NOT NULL DEFAULT '[]',
  selected_url TEXT, track_id TEXT, created REAL NOT NULL, updated REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created);
+CREATE TABLE IF NOT EXISTS daily_discovery (
+ day TEXT NOT NULL, track_id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 '''
 
 
@@ -73,7 +79,7 @@ class Store:
         with self.db() as db:
             db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?', [*fields.values(), job_id])
 
-    def add_track(self, path, metadata):
+    def add_track(self, path, metadata, discovery_day=None):
         path = Path(path)
         digest = hashlib.sha256()
         with path.open('rb') as f:
@@ -83,16 +89,25 @@ class Store:
         source_url = metadata.get('source_url') or None
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
+            if discovery_day:
+                status = self.discovery_status(db)
+                if (discovery_day != date.today().isoformat() or not status['enabled']
+                        or status['added'] >= status['limit']):
+                    return None
             existing = db.execute('SELECT id FROM tracks WHERE fingerprint=? OR source_url=?', (fingerprint, source_url)).fetchone()
             if existing:
                 path.unlink(missing_ok=True)
-                return existing['id']
+                return None if discovery_day else existing['id']
+            if discovery_day and discovery.already_owned(db, metadata['title'], metadata['artist']):
+                return None
             track_id = uuid.uuid4().hex
             filename = track_id + path.suffix.lower()
             target = self.media / filename
             shutil.move(str(path), target)
             try:
                 db.execute('INSERT INTO tracks (id,title,artist,album,duration,filename,source,source_url,fingerprint,created) VALUES (?,?,?,?,?,?,?,?,?,?)', (track_id, str(metadata.get('title') or 'Untitled')[:300], str(metadata.get('artist') or 'Unknown artist')[:300], str(metadata.get('album') or '')[:300], float(metadata.get('duration') or 0), filename, metadata.get('source', 'local'), source_url, fingerprint, time.time()))
+                if discovery_day:
+                    db.execute('INSERT INTO daily_discovery VALUES (?,?)', (discovery_day, track_id))
             except Exception:
                 target.unlink(missing_ok=True)
                 raise
@@ -129,12 +144,27 @@ class Store:
             shutil.rmtree(folder, ignore_errors=True)
         return True
 
+    def discovery_status(self, db):
+        setting = db.execute("SELECT value FROM preferences WHERE key='discovery'").fetchone()
+        added = db.execute('SELECT count(*) FROM daily_discovery WHERE day=?', (date.today().isoformat(),)).fetchone()[0]
+        return dict(enabled=not setting or setting[0] == '1', added=added, limit=3)
+
     def worker(self):
         with self.db() as db:
             db.execute("UPDATE jobs SET status='queued',message='Resuming after restart…' WHERE status='working'")
+        last_day, next_attempt = '', 0
         while True:
-            if not self.process_one():
-                time.sleep(1)
+            if self.process_one():
+                continue
+            day = date.today().isoformat()
+            if day != last_day or time.monotonic() >= next_attempt:
+                last_day, next_attempt = day, time.monotonic() + 1800
+                try:
+                    if discovery.run(self, day):
+                        next_attempt = time.monotonic() + 15
+                except Exception:
+                    logging.getLogger(__name__).exception('Daily discovery failed')
+            time.sleep(1)
 
 
 def create_app(data_dir=None):
@@ -206,7 +236,22 @@ def create_app(data_dir=None):
             playlists = [dict(r) for r in db.execute('SELECT * FROM playlists ORDER BY created')]
             for playlist in playlists:
                 playlist['tracks'] = [r[0] for r in db.execute('SELECT track_id FROM playlist_tracks WHERE playlist_id=? ORDER BY position', (playlist['id'],))]
-        return jsonify(tracks=tracks, playlists=playlists)
+            discovery_status = store.discovery_status(db)
+        return jsonify(tracks=tracks, playlists=playlists, discovery=discovery_status)
+
+    @app.get('/api/discovery')
+    def get_discovery():
+        with store.db() as db:
+            return jsonify(store.discovery_status(db))
+
+    @app.patch('/api/discovery')
+    def update_discovery():
+        enabled = body().get('enabled')
+        if not isinstance(enabled, bool):
+            abort(400, 'enabled must be true or false.')
+        with store.db() as db:
+            db.execute("INSERT OR REPLACE INTO preferences VALUES ('discovery',?)", ('1' if enabled else '0',))
+            return jsonify(store.discovery_status(db))
 
     @app.get('/api/stats')
     def stats():

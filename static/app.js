@@ -4,6 +4,8 @@ const audio = $('audio');
 const dialog = $('dialog');
 const token = document.querySelector('meta[name=muso-token]').content;
 let tracks = [], playlists = [], jobs = [], view = 'library', filter = '';
+let daily = null;
+let updateDailyControls;
 let queue = [], current = '', history = [], shuffle = false, repeat = 0, counted = false;
 let sleepTimer, toastTimer, importing = false;
 const trackById = id => tracks.find(track => track.id === id);
@@ -72,7 +74,7 @@ function form(label, placeholder, submit, action, value = '') {
 }
 
 async function refresh() {
-  ({tracks, playlists} = await api('library'));
+  ({tracks, playlists, discovery: daily} = await api('library'));
   if (current && !trackById(current)) {
     audio.pause();
     audio.removeAttribute('src');
@@ -92,6 +94,7 @@ function navigate(next) {
 }
 
 function render() {
+  updateDailyControls = null;
   for (const tab of document.querySelectorAll('[data-view]')) {
     const selected = tab.dataset.view === view;
     tab.classList.toggle('selected', selected);
@@ -111,6 +114,24 @@ function render() {
     $('summary').textContent = 'Search YouTube for a song or artist.';
     const results = node('div');
     const search = form('Song and artist', 'Search for a song or artist', 'Search', query => searchInto(query, results));
+    const controls = node('div', undefined, 'card');
+    const status = node('p');
+    const toggle = button('', async () => {
+      daily = await api('discovery', 'PATCH', {enabled: !daily.enabled});
+      updateDaily();
+    });
+    function updateDaily() {
+      status.textContent = daily.enabled
+        ? daily.added + ' of 3 new songs saved today. Muso looks for more while it runs.'
+        : 'Automatic additions are paused.';
+      toggle.textContent = daily.enabled ? 'Pause daily discovery' : 'Enable daily discovery';
+    }
+    if (daily) {
+      controls.append(node('strong', 'Daily discovery'), status, toggle);
+      updateDaily();
+      updateDailyControls = updateDaily;
+      $('body').append(controls);
+    }
     $('body').append(search, results);
     return;
   }
@@ -494,3 +515,17 @@ refresh().then(poll).catch(error => toast(error.message));
 setInterval(() => {
   if (document.visibilityState === 'visible') poll().catch(() => {});
 }, 3500);
+setInterval(async () => {
+  if (document.visibilityState !== 'visible') return;
+  try {
+    const status = await api('discovery');
+    if (status.added !== daily?.added || status.enabled !== daily?.enabled) {
+      if (view === 'discover') {
+        ({tracks, playlists, discovery: daily} = await api('library'));
+        updateDailyControls?.();
+      } else {
+        await refresh();
+      }
+    }
+  } catch { /* A stopped server will be checked again on the next tick. */ }
+}, 15000);
