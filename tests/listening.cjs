@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const {spawn} = require('node:child_process');
 const path = require('node:path');
+const fs = require('node:fs');
 const {chromium} = require('playwright');
 
 (async () => {
@@ -31,9 +32,15 @@ const {chromium} = require('playwright');
     const titles = () => page.locator('.track .song strong').allTextContents();
     const saved = () => page.evaluate(() => JSON.parse(localStorage.getItem('muso.playback.v1')));
     const library = () => page.evaluate(() => fetch('/api/library').then(r => r.json()));
+    const capture = async name => {
+      if (!process.env.MUSO_TEST_SCREENSHOT_DIR) return;
+      fs.mkdirSync(process.env.MUSO_TEST_SCREENSHOT_DIR, {recursive: true});
+      await page.screenshot({path: path.join(process.env.MUSO_TEST_SCREENSHOT_DIR, name + '.png'), fullPage: true});
+    };
     await page.goto(url);
     await page.waitForSelector('.track');
     assert.equal((await titles()).length, 4);
+    await capture('library-phone');
     for (const [mix, expected] of [
       ['Your favourites', ['Amber', 'Coral']], ['First listen', ['Blue', 'Dawn']],
       ['Rediscover', ['Amber']], ['Fresh arrivals', ['Blue', 'Dawn']]
@@ -88,9 +95,10 @@ const {chromium} = require('playwright');
     assert.equal(await button('Undo queue change').count(), 0);
     await close();
     // Sleep-after-song takes precedence over looping and keeps upcoming music.
-    await page.locator('#repeat').click();
-    await button('Loop current song', page.locator('#dialog')).click();
-    await page.locator('#sleep').click();
+    await page.locator('#now').click();
+    await capture('now-playing-phone');
+    while (await page.locator('#np-repeat').getAttribute('aria-label') !== 'Repeat song') await page.locator('#np-repeat').click();
+    await page.locator('#np-sleep').click();
     await button('After this song').click();
     const beforeEnd = await saved();
     await page.evaluate(() => document.getElementById('audio').dispatchEvent(new Event('ended')));
@@ -99,7 +107,8 @@ const {chromium} = require('playwright');
     assert.equal((await saved()).current, beforeEnd.current);
     assert.equal(await page.locator('#sleep').textContent(), 'Sleep');
     // A deadline survives reopening the app and still pauses playback.
-    await page.locator('#sleep').click();
+    await page.locator('#now').click();
+    await page.locator('#np-sleep').click();
     await button('15 min').click();
     const deadline = await page.evaluate(() => JSON.parse(localStorage.getItem('muso.sleep.v1')).until);
     await page.reload();
@@ -111,7 +120,9 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => document.getElementById('audio').paused);
     assert.equal(await page.locator('#sleep').textContent(), 'Sleep');
     // Bulk removal only changes membership, not the audio library.
-    await button('Sample playlist', page.locator('#playlists')).click();
+    await page.locator('[data-view="playlists"]').click();
+    await capture('playlists-phone');
+    await button('Sample playlist', page.locator('#body')).click();
     await button('Select songs').click();
     await button('Select matching').click();
     await button('Remove from playlist').click();
@@ -130,10 +141,36 @@ const {chromium} = require('playwright');
     const shuffled = await saved();
     assert.equal(new Set([shuffled.current, ...shuffled.queue]).size, 4);
     assert.equal(shuffled.queue.length, 3);
+    await page.locator('#now').click();
+    assert.equal(await page.locator('#dialog-title').textContent(), 'Now Playing');
+    const upcoming = (await saved()).queue[0];
+    await page.locator('#np-next').click();
+    assert.equal((await saved()).current, upcoming);
+    assert.equal(await page.locator('#np-title').textContent(), (await library()).tracks.find(t => t.id === upcoming).title);
+    await page.locator('#np-play').click();
+    assert.equal(await page.locator('#audio').evaluate(a => a.paused), true);
+    await page.locator('#np-play').click();
+    await page.waitForFunction(() => !document.getElementById('audio').paused);
+    await close();
+    await page.getByRole('searchbox').fill('Amber');
+    await page.getByRole('searchbox').evaluate(input => { input.focus(); input.setSelectionRange(2,4); });
+    await page.evaluate(() => refresh());
+    assert.deepEqual(await page.getByRole('searchbox').evaluate(input => [input === document.activeElement, input.value, input.selectionStart, input.selectionEnd]), [true, 'Amber', 2, 4]);
+    await button('Clear search').click();
+    for (const width of [320,390,720,1280]) {
+      await page.setViewportSize({width,height:844});
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Overflow at ${width}px`);
+      await page.locator('#now').click();
+      assert.equal(await page.locator('#dialog').evaluate(d => d.scrollWidth <= d.clientWidth), true);
+      assert.equal(await page.locator('#np-play').isVisible(), true);
+      await close();
+      await capture(`library-${width}`);
+    }
     assert.deepEqual(errors, []);
-    console.log('PASS: mixes, selection, playlist deduplication/removal, queue undo/save/promotion, sleep precedence/persistence, shuffle, mobile and desktop layout');
+    console.log('PASS: listening, Now Playing, playlist navigation, preserved search focus, and 320–1280px layout');
   } finally {
     if (browser) await browser.close();
     server.kill();
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
+

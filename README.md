@@ -58,6 +58,10 @@ Browse the library by artist, album, or genre. Muso uses available tags, and you
 
 ## Playlists, queue, and recap
 
+On a phone, the bottom navigation keeps **Library**, **Discover**, **Playlists**, **Recap**, and **Imports** within reach. The compact player sits above it. Tap the current song to open **Now Playing** with larger artwork, seeking, like, previous/next, shuffle, repeat, sleep, and queue controls. Repeat in Now Playing cycles through off, queue, and song; the desktop repeat control also offers a named menu. **Queue** remains directly accessible from the compact player. These controls all operate the same audio element, so opening a sheet or changing screens does not restart playback.
+
+**Playlists** has a cover grid, song counts, durations, and a **New playlist** action. The desktop sidebar still offers direct playlist shortcuts. On phones, swipe the listening mixes horizontally to see all four. Search has a clear button and a reset action for empty results; library refresh keeps the current filter and typing position. Refreshing Discover keeps its search in place. Import badges highlight pending jobs or ones needing attention, and failed saves show feedback inside the open dialog.
+
 The Library has four listening mixes: **Your favourites**, **First listen**, **Rediscover**, and **Fresh arrivals**. They use saved music, likes, and listening history. Rediscover brings back songs last played more than two weeks ago; Fresh arrivals shows additions from the last two weeks. Tap a mix again or **All songs** to return to the full library. **Shuffle play** starts with a random song and includes every matching song once.
 
 Use **Select songs** to choose several tracks, even across searches, then **Play next**, **Queue selected**, or **Add to playlist**. **Select matching** selects the current filtered results. Selection clears when you leave the collection. Playlist additions skip existing members; removing selected songs from a playlist keeps the audio in your library.
@@ -98,6 +102,8 @@ Use **Add music** in Muso for YouTube or SoundCloud links when Media Hub owns th
 
 ## Development checks
 
+GitHub Actions runs the backend, DOM, and Chromium listening checks for pull requests and pushes to `main`. Its `muso-layouts` artifact contains the phone library, Now Playing, playlists, and responsive layout screenshots. Optional real-runit tests still require the separate setup described below.
+
 The regression checks use a temporary library and generated silent audio. They do not access your saved music or start discovery. In a development environment with Python requirements and Node.js installed:
 
 ```bash
@@ -108,6 +114,7 @@ npx playwright install chromium
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening.cjs
 ```
 
-The DOM check exercises mixes, selection across filters, playlist membership, queue editing and saving, shuffle, sleep timer state and repeat precedence, and concurrent playlist edit conflicts against real Flask endpoints. It simulates audio and dialog APIs. The browser check additionally covers actual playback, page reload, and phone/desktop overflow. Set `MUSO_TEST_CHROMIUM` to use an existing Chromium executable, or `MUSO_TEST_SCREENSHOT` to save a phone screenshot.
+The DOM check exercises mixes, selection across filters, playlist membership, queue editing and saving, shuffle, sleep timer state and repeat precedence, and concurrent playlist edit conflicts against real Flask endpoints. It also checks the playlist screen, Now Playing controls, search focus/caret preservation, in-dialog save errors, and Discover search preservation. It simulates audio and dialog APIs. The browser check additionally covers actual playback, page reload, and overflow at widths from 320 to 1280 pixels. Set `MUSO_TEST_CHROMIUM` to use an existing Chromium executable, or `MUSO_TEST_SCREENSHOT` to save a phone screenshot.
 
 The supervisor checks exercise real child crashes, replacement supervisors, hung-child recovery, and exact checkout/library targeting. To exercise installation, startup hooks, deliberate stop, and recovery under real runit in an isolated temporary prefix, set `MUSO_TEST_RUNIT_BIN` to a directory containing `sv`, `runsv`, and `runsvdir` when running the Python tests. These checks do not alter a real Termux prefix.
+

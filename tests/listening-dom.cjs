@@ -38,6 +38,7 @@ async function until(predicate) {
       return fetch(new URL(endpoint, url), options);
     };
     w.matchMedia = () => ({matches: false});
+    w.scrollTo = () => {};
     w.confirm = () => true;
     const dialog = d.getElementById('dialog');
     dialog.showModal = () => { dialog.open = true; };
@@ -49,7 +50,7 @@ async function until(predicate) {
     audio.play = async () => { paused = false; audio.dispatchEvent(new w.Event('play')); };
     audio.pause = () => { paused = true; audio.dispatchEvent(new w.Event('pause')); };
     audio.load = () => {};
-    w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep, resumeAfterReload}; window.testNetwork = {api, searchInto};');
+    w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep, resumeAfterReload}; window.testNetwork = {api, searchInto}; window.testUI = {refresh, position};');
     const saved = () => JSON.parse(w.localStorage.getItem('muso.playback.v1'));
     const library = async () => (await fetch(url + '/api/library')).json();
     const click = async (name, root = d) => {
@@ -167,6 +168,16 @@ async function until(predicate) {
     w.testSleep.setSleep(Date.now() + 50);
     await until(() => paused);
     assert.equal(d.getElementById('sleep').textContent, 'Sleep');
+    // Simulate a timer callback arriving before its wall-clock deadline.
+    await audio.play();
+    const realSetTimeout = w.setTimeout;
+    let earlyCallback;
+    w.setTimeout = callback => { earlyCallback = callback; return 0; };
+    w.testSleep.setSleep(Date.now() + 80);
+    w.setTimeout = realSetTimeout;
+    earlyCallback();
+    assert.equal(paused, false);
+    await until(() => paused);
     // Reopening with an expired timer must not schedule another full interval.
     w.localStorage.setItem('muso.sleep.v1', JSON.stringify({until: Date.now() - 1, afterSong: false}));
     w.testSleep.restoreSleep();
@@ -240,9 +251,102 @@ async function until(predicate) {
     await until(() => results.textContent.includes('Found song'));
     results.remove();
     w.fetch = realFetch;
-    console.log('PASS: listening regressions plus transient read recovery, no mutation replay, persistent Discover errors, search polling and retry');
+    // The same playlist navigation is reachable on a phone and a desktop.
+    d.querySelector('[data-view=playlists]').click();
+    assert.equal(d.querySelectorAll('.playlist-card').length, 2);
+    await click('Listening session', d.getElementById('body'));
+    assert.equal(d.getElementById('heading').textContent, 'Listening session');
+    assert.equal(d.querySelector('[data-view=playlists]').getAttribute('aria-pressed'), 'true');
+    assert.equal(titles().length, 4);
+    d.querySelector('[data-view=library]').click();
+    // Background refresh must retain the filter, focus and caret, and the audio.
+    let filterInput = d.querySelector('input[type=search]');
+    filterInput.value = 'Amber'; filterInput.dispatchEvent(new w.Event('input'));
+    filterInput.focus(); filterInput.setSelectionRange(2, 4);
+    const sourceBefore = audio.src;
+    audio.currentTime = 23;
+    await w.testUI.refresh();
+    filterInput = d.querySelector('input[type=search]');
+    assert.equal(d.activeElement, filterInput);
+    assert.equal(filterInput.value, 'Amber');
+    assert.equal(filterInput.selectionStart, 2);
+    assert.equal(filterInput.selectionEnd, 4);
+    assert.equal(audio.src, sourceBefore);
+    assert.equal(audio.currentTime, 23);
+    await click('Clear search');
+    assert.equal(d.activeElement, filterInput);
+    assert.equal(filterInput.value, '');
+    assert.equal(titles().length, 4);
+    filterInput.value = 'no-such-track'; filterInput.dispatchEvent(new w.Event('input'));
+    await click('Reset filters');
+    assert.equal(titles().length, 4);
+    await click('Play all');
+    d.getElementById('now').click();
+    assert.equal(d.getElementById('dialog-title').textContent, 'Now Playing');
+    assert.equal(d.getElementById('np-title').textContent, titles()[0]);
+    assert.equal(d.getElementById('np-play').getAttribute('aria-label'), 'Pause');
+    assert.equal(d.getElementById('np-like').getAttribute('aria-pressed'), 'false');
+    await click('Like current song', dialog);
+    await until(() => d.getElementById('np-like').getAttribute('aria-pressed') === 'true');
+    assert.equal(paused, false);
+    assert.equal(d.getElementById('dialog-title').textContent, 'Now Playing');
+    const nextId = saved().queue[0];
+    await click('Next', dialog);
+    assert.equal(saved().current, nextId);
+    assert.equal(d.getElementById('np-title').textContent, (await library()).tracks.find(t => t.id === nextId).title);
+    const seek = d.getElementById('np-seek');
+    seek.value = 25; seek.dispatchEvent(new w.Event('input'));
+    assert.equal(audio.currentTime, 30);
+    assert.equal(d.getElementById('seek').value, '25');
+    assert.equal(seek.getAttribute('aria-valuetext'), '0:30 of 2:00');
+    await click('Pause', dialog);
+    assert.equal(paused, true);
+    assert.equal(d.getElementById('play').getAttribute('aria-label'), 'Play');
+    await click('Play', dialog);
+    assert.equal(paused, false);
+    const mode = saved().repeat;
+    d.getElementById('np-repeat').click(); await wait(20);
+    assert.equal(saved().repeat, (mode + 1) % 3);
+    assert.equal(d.getElementById('np-repeat').getAttribute('aria-label'), d.getElementById('repeat').getAttribute('aria-label'));
+    const queued = [...saved().queue].sort();
+    d.getElementById('np-shuffle').click(); await wait(20);
+    assert.deepEqual([...saved().queue].sort(), queued);
+    assert.equal(d.getElementById('np-shuffle').getAttribute('aria-pressed'), d.getElementById('shuffle').getAttribute('aria-pressed'));
+    await click('Queue', dialog);
+    assert.equal(d.getElementById('dialog-title').textContent, 'Play queue');
+    await click('Now playing · ' + d.getElementById('now-title').textContent, dialog);
+    assert.ok(d.getElementById('np-title'));
+    await click('Sleep', dialog);
+    await click('After this song', dialog);
+    d.getElementById('now').click();
+    assert.equal(d.getElementById('np-sleep').textContent, 'Sleep · end');
+    dialog.close();
+    // A failed save is readable inside the modal's top layer; a retry works.
+    d.querySelector('[data-view=playlists]').click();
+    await click('New playlist', d.getElementById('body'));
+    w.fetch = (endpoint, options) => endpoint === '/api/playlists' && options.method === 'POST'
+      ? Promise.resolve(new Response(JSON.stringify({error: 'Save failed. Please retry.'}), {status: 503}))
+      : realFetch(endpoint, options);
+    dialog.querySelector('input').value = 'Evening';
+    dialog.querySelector('form').dispatchEvent(new w.Event('submit', {cancelable: true}));
+    await until(() => d.getElementById('dialog-notice'));
+    assert.equal(d.getElementById('dialog-notice').textContent, 'Save failed. Please retry.');
+    assert.equal(dialog.open, true);
+    w.fetch = realFetch;
+    dialog.querySelector('form').dispatchEvent(new w.Event('submit', {cancelable: true}));
+    await until(() => d.getElementById('heading').textContent === 'Evening');
+    assert.ok(d.getElementById('body').textContent.includes('Add saved songs'));
+    // Manual/library refresh must not discard an in-progress Discover search.
+    d.querySelector('[data-view=discover]').click();
+    const discoverInput = d.querySelector('#body form input');
+    discoverInput.value = 'An artist';
+    await w.testUI.refresh();
+    assert.equal(d.querySelector('#body form input'), discoverInput);
+    assert.equal(discoverInput.value, 'An artist');
+    console.log('PASS: listening, recovery, playlists, filter focus/caret, Now Playing transport/seek/like/repeat/shuffle/sleep, in-dialog errors, and Discover preservation');
   } finally {
     dom?.window.close();
     server.kill();
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
+

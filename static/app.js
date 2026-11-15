@@ -26,6 +26,43 @@ const time = value => Number.isFinite(value) ? Math.floor(value / 60) + ':' + St
 const totalTime = seconds => seconds >= 3600 ? `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
   : seconds >= 60 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds)}s`;
 
+const iconPaths = {
+  library: 'M4 4v16M9 4v16M14 5l5-1 3 15-5 1z',
+  search: 'M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
+  playlist: 'M4 5h12M4 10h12M4 15h7M17 13v7M13.5 16.5h7',
+  heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8',
+  recap: 'M4 19V9M10 19V4M16 19v-7M22 19V7',
+  download: 'M12 3v12M7 10l5 5 5-5M4 16v5h16v-5',
+  refresh: 'M20 7v5h-5M4 17v-5h5M6 6a8 8 0 0 1 13 2M18 18A8 8 0 0 1 5 16',
+  install: 'M8 3H4v18h16v-4M15 3v10M11 9l4 4 4-4',
+  plus: 'M12 5v14M5 12h14', close: 'M6 6l12 12M18 6 6 18',
+  play: 'M8 4l13 8-13 8z', pause: 'M8 5v14M16 5v14',
+  next: 'M5 5l10 7-10 7zM19 5v14', previous: 'M19 5 9 12l10 7zM5 5v14',
+  shuffle: 'M3 6h3c6 0 6 12 12 12h3M18 15l3 3-3 3M3 18h3c2 0 3-2 4-4M14 8c1-2 2-2 4-2h3M18 3l3 3-3 3',
+  repeat: 'M3 10V6h16M16 3l3 3-3 3M21 14v4H5M8 15l-3 3 3 3',
+  spark: 'M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3z',
+  clock: 'M12 8v5l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+  more: 'M5 12h.01M12 12h.01M19 12h.01'
+};
+function icon(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'ui-icon');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', iconPaths[name] || iconPaths.play);
+  svg.append(path);
+  return svg;
+}
+function iconButton(name, action, label, cls = 'icon') {
+  const control = button('', action, cls, label);
+  control.append(icon(name));
+  return control;
+}
+for (const control of document.querySelectorAll('[data-icon]')) control.prepend(icon(control.dataset.icon));
+for (const [id, name] of [['shuffle','shuffle'], ['prev','previous'], ['next','next']]) $(id).replaceChildren(icon(name));
+
 function node(tag, text, className) {
   const item = document.createElement(tag);
   if (text !== undefined) item.textContent = text;
@@ -88,12 +125,28 @@ function toast(message) {
   clearTimeout(toastTimer);
   $('toast').textContent = message;
   $('toast').hidden = false;
-  toastTimer = setTimeout(() => $('toast').hidden = true, 5500);
+  // Native dialogs live above every document z-index. Show feedback inside the
+  // open sheet as well, so a failed save is visible and announced there.
+  if (dialog.open) {
+    let notice = $('dialog-notice');
+    if (!notice) {
+      notice = node('p', '', 'dialog-notice');
+      notice.id = 'dialog-notice';
+      notice.setAttribute('role', 'status');
+      $('dialog-body').before(notice);
+    }
+    notice.textContent = message;
+    dialog.scrollTop = 0;
+  }
+  toastTimer = setTimeout(() => { $('toast').hidden = true; $('dialog-notice')?.remove(); }, 5500);
 }
 
 function modal(title, ...content) {
+  // A sheet replaced by another sheet must start at its heading, not its old scroll offset.
   $('dialog-title').textContent = title;
+  $('dialog-notice')?.remove();
   $('dialog-body').replaceChildren(...content);
+  dialog.scrollTop = 0;
   if (!dialog.open) dialog.showModal();
 }
 
@@ -143,7 +196,8 @@ async function refresh() {
   queue = queue.filter(trackById);
   history = history.filter(trackById);
   selected = new Set([...selected].filter(trackById));
-  render();
+  if (view === 'discover' && updateDailyControls) updateDailyControls();
+  else render();
   player();
 }
 
@@ -173,6 +227,7 @@ function navigate(next) {
   filter = '';
   sortOrder = 'default';
   render();
+  window.scrollTo({top: 0, behavior: 'instant'});
   if (view === 'imports') poll().catch(error => toast(error.message));
 }
 
@@ -266,17 +321,60 @@ function renderRecap() {
 }
 
 function render() {
+  // Polling and likes can refresh the list while someone is typing. Keep their
+  // focus and caret, as well as the active filter and selection.
+  const active = document.activeElement;
+  const label = active?.getAttribute('aria-label');
+  const inBody = $('body').contains(active);
+  const selection = inBody && active.tagName === 'INPUT' && ['search', 'text'].includes(active.type)
+    ? [active.selectionStart, active.selectionEnd] : null;
+  renderView();
+  if (inBody && label) {
+    const replacement = [...$('body').querySelectorAll('[aria-label]')].find(item => item.getAttribute('aria-label') === label);
+    replacement?.focus({preventScroll: true});
+    if (selection && replacement?.setSelectionRange) replacement.setSelectionRange(...selection);
+  }
+}
+
+function renderPlaylists() {
+  $('summary').textContent = `${playlists.length} ${playlists.length === 1 ? 'playlist' : 'playlists'} · Your music, in your order.`;
+  const actions = node('div', undefined, 'actions');
+  actions.append(button('New playlist', newPlaylist, 'primary'), button('Liked songs', () => navigate('liked')));
+  const grid = node('div', undefined, 'playlist-grid');
+  for (const playlist of playlists) {
+    const songs = playlist.tracks.map(trackById).filter(Boolean);
+    const card = button('', () => navigate(playlist.id), 'playlist-card', playlist.name);
+    const cover = node('span', '', 'cover');
+    coverArt(cover, {id: playlist.id});
+    card.append(cover, node('strong', playlist.name), node('small', `${songs.length} songs · ${totalTime(songs.reduce((sum, t) => sum + (t.duration || 0), 0))}`));
+    grid.append(card);
+  }
+  $('body').append(actions, grid);
+  if (!playlists.length) {
+    const empty = node('div', undefined, 'empty');
+    empty.append(node('strong', 'A place for every mood'), node('p', 'Create a playlist, then add songs from their options menu or select a few together.'));
+    $('body').append(empty);
+  }
+}
+
+function renderView() {
   updateDailyControls = null;
+  const playlist = playlists.find(item => item.id === view);
   for (const tab of document.querySelectorAll('[data-view]')) {
-    const selected = tab.dataset.view === view;
+    const selected = tab.dataset.view === view || (tab.dataset.view === 'playlists' && playlist)
+      || (tab.dataset.view === 'discover' && view === 'finds');
     tab.classList.toggle('selected', selected);
-    tab.setAttribute('aria-pressed', selected);
+    tab.setAttribute('aria-pressed', Boolean(selected));
   }
   $('playlists').replaceChildren(...playlists.map(playlist =>
     button(playlist.name, () => navigate(playlist.id), view === playlist.id ? 'selected' : '')));
-  const playlist = playlists.find(item => item.id === view);
-  $('heading').textContent = playlist?.name || ({library:'Library', liked:'Liked songs', discover:'Discover', finds:'Daily Finds', imports:'Imports', recap:'Monthly Recap'}[view] || 'Library');
+  $('heading').textContent = playlist?.name || ({library:'Your rotation.', liked:'Liked songs', playlists:'Your playlists.', discover:'Find your next.', finds:'Daily Finds', imports:'Coming your way.', recap:'Your month in music.'}[view] || 'Library');
+  $('eyebrow').textContent = playlist ? 'CURATED BY YOU' : ({library:'MADE OF YOUR FAVOURITES', liked:'THE ONES YOU LOVE', playlists:'A PLACE FOR EVERY MOOD', discover:'A LITTLE OUTSIDE YOUR USUAL', finds:'FRESHLY FOUND FOR YOU', imports:'MAKING ROOM FOR MORE', recap:'YOUR LISTENING STORY'}[view] || 'YOUR MUSIC LIBRARY');
   $('body').replaceChildren();
+  if (view === 'playlists') {
+    renderPlaylists();
+    return;
+  }
   if (view === 'recap') {
     renderRecap();
     return;
@@ -345,6 +443,9 @@ function render() {
   const toolbar = node('div', undefined, 'toolbar');
   let groupFilter = null;
   if (view === 'library') {
+    const shelfTitle = node('div', undefined, 'section-heading');
+    shelfTitle.append(node('h2', 'Find your mood'), node('small', 'Made from your library'));
+    $('body').append(shelfTitle);
     const shelf = node('div', undefined, 'mix-shelf');
     for (const [key, title, description] of mixes) {
       const count = mixTracks(key).length;
@@ -358,7 +459,9 @@ function render() {
         render();
       }, 'mix-card' + (activeMix === key ? ' active' : ''), title);
       card.setAttribute('aria-pressed', activeMix === key);
-      card.append(node('strong', title), node('small', description), node('span', count + ' songs'));
+      const symbol = node('span', undefined, 'mix-symbol');
+      symbol.append(icon({favourites:'heart', unheard:'play', rediscover:'clock', recent:'spark'}[key]));
+      card.append(symbol, node('strong', title), node('small', description), node('span', count + ' songs', 'mix-count'));
       shelf.append(card);
     }
     $('body').append(shelf);
@@ -405,9 +508,16 @@ function render() {
   }
   const input = node('input');
   input.type = 'search';
-  input.placeholder = 'Filter songs…';
+  input.placeholder = 'Search your music';
   input.setAttribute('aria-label', 'Filter songs');
   input.value = filter;
+  const searchField = node('div', undefined, 'search-field');
+  const clearSearch = iconButton('close', () => {
+    filter = input.value = '';
+    renderList();
+    input.focus();
+  }, 'Clear search');
+  searchField.append(icon('search'), input, clearSearch);
   const sort = node('select');
   sort.setAttribute('aria-label', 'Sort songs');
   for (const [value, label] of [
@@ -427,7 +537,8 @@ function render() {
     title: (a, b) => trackOrder.compare(a.title, b.title),
     artist: (a, b) => trackOrder.compare(a.artist, b.artist) || trackOrder.compare(a.title, b.title)
   };
-  const playAll = button('Play all', () => { if (shown.length) start(shown, 0); });
+  const playAll = button('Play all', () => { if (shown.length) start(shown, 0); }, 'primary');
+  playAll.prepend(icon('play'));
   const shuffleAll = button('Shuffle play', () => {
     if (!shown.length) return;
     const shuffled = [...shown];
@@ -472,6 +583,7 @@ function render() {
     selectionBar.append(...actions);
   }
   function renderList() {
+    clearSearch.hidden = !filter;
     const words = filter.toLocaleLowerCase().trim().split(/\s+/);
     shown = collection.filter(track => {
       const searchable = [track.title, track.artist, track.album, track.genre].join(' ').toLocaleLowerCase();
@@ -503,21 +615,29 @@ function render() {
       const empty = node('div', undefined, 'empty');
       empty.append(node('strong', filter || activeMix || groupFilter ? 'No matching songs' : 'No songs yet'));
       if (filter || activeMix || groupFilter) empty.append(node('p', 'Try another mix or change your filters.'));
+      else if (view === 'liked') empty.append(node('p', 'Tap the heart beside any song to keep your favourites here.'), button('Browse your library', () => navigate('library')));
+      else if (playlist) empty.append(node('p', 'Add saved songs from their options menu or select several in your library.'), button('Browse your library', () => navigate('library')));
       else if (view === 'finds') empty.append(node('p', 'Songs saved by Daily Discovery will appear here.'), button('Back to Discover', () => navigate('discover')));
       else empty.append(node('p', 'Add a link or import audio from your phone.'), button('Add music', addMusic, 'primary'));
+      if (filter || activeMix || groupFilter) empty.append(button('Reset filters', () => {
+        filter = activeMix = browseGroup = '';
+        render();
+      }));
       list.append(empty);
     }
   }
   input.oninput = () => { filter = input.value; renderList(); };
   sort.onchange = () => { sortOrder = sort.value; renderList(); };
-  toolbar.append(input, sort, playAll, shuffleAll, selectSongs);
+  toolbar.append(searchField, sort);
+  const collectionActions = node('div', undefined, 'actions collection-actions');
+  collectionActions.append(playAll, shuffleAll, selectSongs);
   if (playlist) {
-    toolbar.append(button('Edit playlist', () => managePlaylist(playlist), undefined, 'Edit ' + playlist.name));
-    toolbar.append(button('Queue playlist', () => {
+    collectionActions.append(button('Edit playlist', () => managePlaylist(playlist), undefined, 'Edit ' + playlist.name));
+    collectionActions.append(button('Queue playlist', () => {
       addToQueue(playlist.tracks);
     }));
   }
-  $('body').append(toolbar, resultsCount, selectionBar, list);
+  $('body').append(toolbar, collectionActions, resultsCount, selectionBar, list);
   renderList();
 }
 
@@ -544,11 +664,13 @@ function row(track, play) {
   coverArt(cover, track);
   song.append(cover, caption);
   const actions = node('div', undefined, 'actions');
-  actions.append(button(track.liked ? '♥' : '♡', async () => {
+  const like = iconButton('heart', async () => {
     await api('tracks/' + track.id, 'PATCH', {liked: !track.liked});
     await refresh();
-  }, 'icon' + (track.liked ? ' on' : ''), track.liked ? 'Unlike ' + track.title : 'Like ' + track.title),
-  button('⋯', () => trackMenu(track), 'icon', 'Options for ' + track.title));
+  }, track.liked ? 'Unlike ' + track.title : 'Like ' + track.title, 'icon' + (track.liked ? ' on' : ''));
+  like.setAttribute('aria-pressed', Boolean(track.liked));
+  like.classList.add('like-button');
+  actions.append(like, iconButton('more', () => trackMenu(track), 'Options for ' + track.title));
   item.append(song, actions);
   return item;
 }
@@ -663,6 +785,7 @@ function orderedTracks(container, ids, onChange, play, beforeChange = () => {}) 
     if (!track) return;
     const entry = node('div', undefined, 'ordered-track');
     const label = play ? button(track.title, () => play(id, index), 'ordered-title') : node('span', track.title, 'ordered-title');
+    label.append(node('small', track.artist));
     const controls = node('div', undefined, 'actions');
     const move = destination => {
       if (destination === index) return;
@@ -863,6 +986,10 @@ async function poll() {
     if (view === 'imports' && changed) renderJobs();
     disconnectedSince = 0;
     const pending = jobs.filter(job => ['queued','working','needs_match'].includes(job.status)).length;
+    const attention = jobs.filter(job => ['needs_match','failed'].includes(job.status)).length;
+    $('imports-badge').hidden = !(pending || attention);
+    $('imports-badge').textContent = String(jobs.filter(job => ['queued','working','needs_match','failed'].includes(job.status)).length);
+    $('imports-badge').setAttribute('aria-label', attention ? `${attention} imports need attention` : `${pending} pending imports`);
     $('status').textContent = pending ? pending + ' pending · Imports' : '● On this device';
   } finally { importing = false; }
 }
@@ -967,11 +1094,16 @@ function toggle() {
 function player() {
   const track = trackById(current);
   coverArt($('now-cover'), track);
-  $('now-title').textContent = track?.title || 'Nothing playing';
-  $('now-artist').textContent = track?.artist || (queue.length ? queue.length + ' songs queued' : 'Your queue is empty');
-  $('play').textContent = audio.paused ? '▶' : '⏸';
+  $('now-title').textContent = track?.title || 'Your next favourite awaits';
+  $('now-artist').textContent = track?.artist || (queue.length ? queue.length + ' songs queued' : 'Choose a song to get started');
+  $('play').replaceChildren(icon(audio.paused ? 'play' : 'pause'));
   $('play').setAttribute('aria-label', audio.paused ? 'Play' : 'Pause');
   $('queue').textContent = queue.length ? 'Queue · ' + queue.length : 'Queue';
+  $('queue').setAttribute('aria-label', queue.length ? `Play queue, ${queue.length} songs up next` : 'Play queue');
+  $('next').disabled = !queue.length;
+  $('prev').disabled = !current;
+  updateNowPlaying();
+  position();
   for (const row of document.querySelectorAll('.track[data-track-id]')) {
     row.classList.toggle('playing', row.dataset.trackId === current);
   }
@@ -985,6 +1117,97 @@ function position() {
   $('elapsed').textContent = time(audio.currentTime);
   $('duration').textContent = time(audio.duration);
   $('seek').value = audio.duration ? audio.currentTime / audio.duration * 100 : 0;
+  $('seek').disabled = !current || !Number.isFinite(audio.duration) || audio.duration <= 0;
+  $('seek').setAttribute('aria-valuetext', `${time(audio.currentTime)} of ${time(audio.duration)}`);
+  if ($('np-seek')) {
+    $('np-seek').value = $('seek').value;
+    $('np-seek').disabled = $('seek').disabled;
+    $('np-seek').setAttribute('aria-valuetext', $('seek').getAttribute('aria-valuetext'));
+    $('np-elapsed').textContent = $('elapsed').textContent;
+    $('np-duration').textContent = $('duration').textContent;
+  }
+}
+
+function nowPlaying() {
+  if (!current && !queue.length) {
+    const empty = node('div', undefined, 'empty');
+    empty.append(node('strong', 'Let’s put something on.'), node('p', 'Pick a song from your library, or add something new.'),
+      button(tracks.length ? 'Play your library' : 'Add music', () => {
+        if (tracks.length) { start(tracks, 0); nowPlaying(); }
+        else addMusic();
+      }, 'primary'));
+    modal('Now Playing', empty);
+    return;
+  }
+  const content = node('div', undefined, 'now-playing');
+  const identified = (element, id) => { element.id = id; return element; };
+  const cover = identified(node('div', '', 'cover now-art'), 'np-cover');
+  const details = node('div', undefined, 'now-details');
+  const caption = node('div');
+  caption.append(identified(node('h3'), 'np-title'), identified(node('p'), 'np-artist'));
+  const like = identified(iconButton('heart', async () => {
+    const track = trackById(current);
+    if (!track) return;
+    await api('tracks/' + track.id, 'PATCH', {liked: !track.liked});
+    await refresh();
+  }, 'Like current song'), 'np-like');
+  details.append(caption, like);
+  const progress = node('div', undefined, 'progress');
+  const seek = identified(node('input'), 'np-seek');
+  seek.type = 'range'; seek.min = 0; seek.max = 100; seek.step = 0.1;
+  seek.setAttribute('aria-label', 'Seek current song');
+  seek.oninput = event => {
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = Number(event.target.value) * audio.duration / 100;
+      position();
+    }
+  };
+  progress.append(identified(node('small'), 'np-elapsed'), seek, identified(node('small'), 'np-duration'));
+  const controls = node('div', undefined, 'controls');
+  controls.append(
+    identified(iconButton('shuffle', toggleShuffle, 'Shuffle'), 'np-shuffle'),
+    identified(iconButton('previous', previous, 'Previous'), 'np-prev'),
+    identified(iconButton('play', toggle, 'Play', 'primary play'), 'np-play'),
+    identified(iconButton('next', () => advance(), 'Next'), 'np-next'),
+    identified(iconButton('repeat', () => setRepeat((repeat + 1) % 3), 'Repeat off'), 'np-repeat')
+  );
+  const actions = node('div', undefined, 'actions');
+  actions.append(button('Queue', queueDialog), identified(button('Sleep', () => $('sleep').click()), 'np-sleep'),
+    button('Song options', () => { const track = trackById(current); if (track) trackMenu(track); }));
+  const next = identified(button('', queueDialog, 'up-next', 'View upcoming songs'), 'np-up-next');
+  content.append(cover, details, progress, controls, actions, next);
+  modal('Now Playing', content);
+  updateNowPlaying();
+  position();
+}
+
+function updateNowPlaying() {
+  if (!$('np-title')) return;
+  const track = trackById(current);
+  coverArt($('np-cover'), track);
+  $('np-title').textContent = track?.title || 'Ready when you are';
+  $('np-artist').textContent = [track?.artist, track?.album].filter(Boolean).join(' · ') || 'Press play to start your queue';
+  $('np-play').replaceChildren(icon(audio.paused ? 'play' : 'pause'));
+  $('np-play').setAttribute('aria-label', audio.paused ? 'Play' : 'Pause');
+  $('np-prev').disabled = !current;
+  $('np-next').disabled = !queue.length;
+  $('np-like').disabled = !track;
+  $('np-like').classList.toggle('on', Boolean(track?.liked));
+  $('np-like').setAttribute('aria-label', track?.liked ? 'Unlike current song' : 'Like current song');
+  $('np-like').setAttribute('aria-pressed', Boolean(track?.liked));
+  $('np-shuffle').classList.toggle('on', shuffle);
+  $('np-shuffle').setAttribute('aria-pressed', shuffle);
+  const repeatLabel = ['Repeat off','Repeat queue','Repeat song'][repeat];
+  $('np-repeat').replaceChildren(icon('repeat'));
+  if (repeat === 2) $('np-repeat').append(node('sup', '1'));
+  $('np-repeat').classList.toggle('on', repeat > 0);
+  $('np-repeat').setAttribute('aria-label', repeatLabel);
+  $('np-repeat').setAttribute('aria-pressed', repeat > 0);
+  $('np-sleep').textContent = $('sleep').textContent;
+  const next = trackById(queue[0]);
+  const caption = node('span');
+  caption.append(node('small', next ? 'Up next' : 'Make it a longer listen'), document.createTextNode(next ? `${next.title} · ${next.artist}` : 'Add songs from your library'));
+  $('np-up-next').replaceChildren(icon('playlist'), caption);
 }
 
 function queueDialog() {
@@ -1006,7 +1229,7 @@ function queueDialog() {
   }));
   const track = trackById(current);
   if (track) {
-    content.append(node('p', 'Now playing · ' + track.title), button(
+    content.append(button('Now playing · ' + track.title, nowPlaying, 'quiet'), button(
       repeat === 2 ? 'Stop looping song' : 'Loop current song', () => {
         setRepeat(repeat === 2 ? 0 : 2);
         queueDialog();
@@ -1035,17 +1258,19 @@ function queueDialog() {
 
 $('close').onclick = () => dialog.close();
 $('add').onclick = addMusic;
-$('new-playlist').onclick = () => modal('New playlist', form('Playlist name', 'Playlist name', 'Create', async name => {
+function newPlaylist() { modal('New playlist', form('Playlist name', 'Playlist name', 'Create', async name => {
   const result = await api('playlists','POST',{name});
   dialog.close();
-  view = result.id;
+  navigate(result.id);
   await refresh();
-}));
+})); }
+$('new-playlist').onclick = newPlaylist;
 for (const tab of document.querySelectorAll('[data-view]')) tab.onclick = () => navigate(tab.dataset.view);
 $('play').onclick = toggle;
 $('next').onclick = () => advance();
 $('prev').onclick = previous;
-$('queue').onclick = $('now').onclick = queueDialog;
+$('queue').onclick = queueDialog;
+$('now').onclick = nowPlaying;
 function updatePlaybackModes() {
   $('shuffle').classList.toggle('on', shuffle);
   $('shuffle').setAttribute('aria-pressed', shuffle);
@@ -1054,13 +1279,15 @@ function updatePlaybackModes() {
   $('repeat').classList.toggle('on', repeat > 0);
   $('repeat').title = label;
   $('repeat').setAttribute('aria-label', label);
+  updateNowPlaying();
 }
-$('shuffle').onclick = () => {
+function toggleShuffle() {
   shuffle = !shuffle;
   if (shuffle) shuffleQueue();
   updatePlaybackModes();
   savePlayback();
-};
+}
+$('shuffle').onclick = toggleShuffle;
 function setRepeat(mode) {
   repeat = mode;
   updatePlaybackModes();
@@ -1083,15 +1310,23 @@ function updateSleep() {
   $('sleep').textContent = sleepAfterSong ? 'Sleep · end' : sleepUntil ? `Sleep · ${remaining}m` : 'Sleep';
   $('sleep').classList.toggle('on', Boolean(sleepUntil || sleepAfterSong));
   $('sleep').setAttribute('aria-label', sleepAfterSong ? 'Sleep after current song' : sleepUntil ? `Sleep timer: ${remaining} minutes remaining` : 'Sleep timer');
+  if ($('np-sleep')) $('np-sleep').textContent = $('sleep').textContent;
 }
 
 function setSleep(until = 0, afterSong = false) {
-  clearTimeout(sleepTimer);
   sleepUntil = until;
   sleepAfterSong = afterSong;
   try { localStorage.setItem(sleepKey, JSON.stringify({until, afterSong})); } catch {}
-  if (sleepUntil) sleepTimer = setTimeout(checkSleep, Math.max(0, sleepUntil - Date.now()));
+  scheduleSleepCheck();
   updateSleep();
+}
+
+function scheduleSleepCheck() {
+  clearTimeout(sleepTimer);
+  sleepTimer = sleepUntil ? setTimeout(() => {
+    sleepTimer = null;
+    checkSleep();
+  }, Math.max(1, sleepUntil - Date.now())) : null;
 }
 
 function checkSleep(ended = false) {
@@ -1102,6 +1337,9 @@ function checkSleep(ended = false) {
     toast('Sleep timer finished');
     return true;
   }
+  // Timers can fire just before a wall-clock deadline. Re-arm instead of
+  // depending on another timeupdate or visibility event to finish the timer.
+  if (sleepUntil && sleepTimer === null) scheduleSleepCheck();
   updateSleep();
   return false;
 }
@@ -1252,3 +1490,4 @@ installButton.onclick = async () => {
   }
 };
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
