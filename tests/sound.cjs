@@ -7,7 +7,7 @@ const {chromium} = require('playwright');
 
 (async () => {
   const server = spawn(process.env.MUSO_TEST_PYTHON || 'python3', [path.join(__dirname, 'serve_listening_fixture.py')], {env: {...process.env, MUSO_TEST_TONE: '1'}});
-  let browser, logs = '';
+  let browser, page, logs = '';
   server.stderr.on('data', value => logs += value);
   try {
     const url = await new Promise((resolve, reject) => {
@@ -22,7 +22,7 @@ const {chromium} = require('playwright');
       });
     });
     browser = await chromium.launch({headless: true, executablePath: process.env.MUSO_TEST_CHROMIUM || undefined, args: ['--no-sandbox']});
-    const page = await browser.newPage({viewport: {width:390,height:844}});
+    page = await browser.newPage({viewport: {width:390,height:844}});
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const button = name => page.getByRole('button', {name, exact:true});
@@ -176,5 +176,13 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => sound.context?.state==='running' && !audio.paused);
     assert.deepEqual(errors, []);
     console.log('PASS: aligned recap, real EQ output, presets/volume/speed, crossfade overlap, cancellation, failed incoming audio, repeat, sleep, and reload');
+  } catch (error) {
+    if (page) console.error('Playback state:', await page.evaluate(() => ({current, queue, history, failedFade,
+      pending: Boolean(fadeRequest), fading: Boolean(fadingOut), repeat, sleepUntil, sleepAfterSong,
+      settings: sound.settings, context: sound.context?.state,
+      decks: audioDecks.map(a => ({id:a.id,src:a.getAttribute('src'),paused:a.paused,time:a.currentTime,
+        duration:a.duration,ready:a.readyState,seeking:a.seeking,error:a.error?.code,gain:sound.gains.get(a)?.gain.value}))
+    })).catch(() => 'Page unavailable'));
+    throw error;
   } finally { await browser?.close(); server.kill(); }
 })().catch(error => { console.error(error); process.exitCode=1; });
