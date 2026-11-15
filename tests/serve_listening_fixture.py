@@ -4,6 +4,9 @@ import signal
 import tempfile
 import time
 import wave
+import os
+import math
+import struct
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -29,7 +32,11 @@ with tempfile.TemporaryDirectory(prefix="muso-listening-test-") as root:
                 wav.setnchannels(1)
                 wav.setsampwidth(2)
                 wav.setframerate(8000)
-                wav.writeframes(b"\x00\x00" * 8000 * 120)
+                if os.environ.get('MUSO_TEST_TONE') == '1':
+                    second = b''.join(struct.pack('<h', round(2500 * math.sin(2 * math.pi * (440 + i * 220) * n / 8000))) for n in range(8000))
+                    wav.writeframes(second * 120)
+                else:
+                    wav.writeframes(b"\x00\x00" * 8000 * 120)
             db.execute("""INSERT INTO tracks
                 (id,title,artist,album,duration,filename,source,liked,plays,last_played,created)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -39,3 +46,4 @@ with tempfile.TemporaryDirectory(prefix="muso-listening-test-") as root:
     server = make_server("127.0.0.1", 0, app, threaded=True)
     print(f"http://127.0.0.1:{server.server_port}", flush=True)
     server.serve_forever()
+

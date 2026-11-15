@@ -1,6 +1,9 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const audio = $('audio');
+let audio = $('audio');
+const audioDecks = [audio, $('audio-next')];
+const sound = new MusoSound(audioDecks);
+let fadeRequest = null, fadingOut = null, fadeTimer = null, playbackGeneration = 0, failedFade = '';
 const dialog = $('dialog');
 const token = document.querySelector('meta[name=muso-token]').content;
 let tracks = [], playlists = [], jobs = [], view = 'library', filter = '';
@@ -198,6 +201,7 @@ $('refresh-library').addEventListener('click', async () => {
 async function refresh() {
   ({tracks, playlists, discovery: daily} = await api('library'));
   if (current && !trackById(current)) {
+    cancelTransition();
     current = '';
     resumeAt = null;
     audio.pause();
@@ -301,21 +305,30 @@ function renderRecap() {
       stats.append(card);
     }
     const artistList = node('ol', undefined, 'recap-ranks');
-    for (const artist of data.top_artists) {
-      const entry = node('li');
+    for (const [index, artist] of data.top_artists.entries()) {
+      const entry = node('li', undefined, 'recap-row recap-artist');
       const bar = node('progress');
       bar.max = data.top_artists[0].plays;
       bar.value = artist.plays;
       bar.setAttribute('aria-label', artist.artist + ' plays');
-      entry.append(node('span', artist.artist), node('small', artist.plays + ' plays'), bar);
+      const caption = node('div', undefined, 'recap-caption');
+      caption.append(node('strong', artist.artist), bar);
+      entry.append(node('span', index + 1, 'recap-rank'), caption, recapPlays(artist.plays));
       artistList.append(entry);
     }
     const songList = node('ol', undefined, 'recap-ranks');
-    for (const track of data.top_tracks) {
-      const entry = node('li');
-      const title = track.title + ' · ' + track.artist;
-      entry.append(track.available ? button(title, () => playTrack(track.id), 'quiet') : node('span', title),
-        node('small', track.plays + ' plays'));
+    for (const [index, track] of data.top_tracks.entries()) {
+      const entry = node('li', undefined, 'recap-row');
+      const song = track.available ? button('', () => playTrack(track.id), 'recap-song', 'Play ' + track.title)
+        : node('div', undefined, 'recap-song unavailable');
+      song.title = track.title + ' · ' + track.artist;
+      const cover = node('span', '', 'cover');
+      coverArt(cover, track);
+      const caption = node('span', undefined, 'recap-caption');
+      caption.append(node('strong', track.title), node('small', track.artist));
+      if (!track.available) caption.append(node('small', 'No longer in your library', 'recap-unavailable'));
+      song.append(cover, caption);
+      entry.append(node('span', index + 1, 'recap-rank'), song, recapPlays(track.plays));
       songList.append(entry);
     }
     const available = data.top_tracks.filter(track => track.available).map(track => track.id);
@@ -329,6 +342,12 @@ function renderRecap() {
       content.append(save);
     }
   }).catch(error => { content.textContent = error.message; });
+}
+
+function recapPlays(plays) {
+  const count = node('span', undefined, 'recap-plays');
+  count.append(node('strong', plays.toLocaleString()), node('small', plays === 1 ? 'play' : 'plays'));
+  return count;
 }
 
 function render() {
@@ -1051,21 +1070,153 @@ function restorePlayback() {
   player();
 }
 
-function playTrack(id, recordHistory = true) {
-  const track = trackById(id);
-  if (!track) return;
+function cancelTransition() {
+  playbackGeneration++;
+  if (fadeRequest) {
+    const request = fadeRequest;
+    fadeRequest = null;
+    clearTimeout(request.timeout);
+    request.cancel?.();
+    request.incoming.pause();
+    sound.gain(request.incoming, 0);
+  }
+  finishFade();
+}
+
+function finishFade() {
+  clearTimeout(fadeTimer);
+  fadeTimer = null;
+  const outgoing = fadingOut;
+  fadingOut = null;
+  if (outgoing && outgoing !== audio) {
+    outgoing.pause();
+    sound.gain(outgoing, 0);
+    outgoing.removeAttribute('src');
+    outgoing.preload = 'none';
+    outgoing.load();
+  }
+  sound.gain(audio, 1);
+}
+
+function resumePlayback() {
+  const element = audio, generation = playbackGeneration;
+  if (!sound.context && !sound.settings.enabled) return element.play();
+  return sound.activate().then(() => {
+    if (generation === playbackGeneration && element === audio) return element.play();
+  });
+}
+
+function pausePlayback() {
+  cancelTransition();
+  audio.pause();
+}
+
+function seekPlayback(seconds) {
+  if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+  cancelTransition();
+  failedFade = '';
+  audio.currentTime = Math.max(0, Math.min(audio.duration, seconds));
+  position();
+}
+
+function commitTrack(id, recordHistory, options = {}) {
+  const previousId = current;
+  if (options.previous) {
+    if (previousId) queue.unshift(previousId);
+    if (history.at(-1) === id) history.pop();
+  }
+  if (options.consume && queue[0] === id) queue.shift();
+  if (options.cycle && repeat === 1 && previousId) queue.push(previousId);
+  if (recordHistory && previousId && previousId !== id) history.push(previousId);
   queueUndo = null;
-  if (recordHistory && current && current !== id) history.push(current);
   current = id;
   counted = false;
   playedSeconds = 0;
   lastAudioTime = 0;
   resumeAt = null;
-  audio.src = '/api/tracks/' + id + '/audio';
+  failedFade = '';
   savePlayback();
   player();
-  audio.play().catch(() => toast('Tap play to start audio.'));
   if (dialog.open && $('dialog-title').textContent === 'Play queue') queueDialog();
+}
+
+function playTrack(id, recordHistory = true, options = {}) {
+  const track = trackById(id);
+  if (!track) return;
+  cancelTransition();
+  if (!options.noFade && sound.canFade && current && current !== id && !audio.paused && audio.readyState >= 2) {
+    crossfadeTo(id, recordHistory, options);
+    return;
+  }
+  audio.src = '/api/tracks/' + id + '/audio';
+  commitTrack(id, recordHistory, options);
+  resumePlayback().catch(() => toast('Tap play to start audio.'));
+}
+
+async function crossfadeTo(id, recordHistory, options) {
+  const outgoing = audio, incoming = audioDecks.find(element => element !== audio);
+  const generation = playbackGeneration;
+  const previousId = current;
+  const request = {incoming, timeout: null, cancel: null};
+  fadeRequest = request;
+  sound.gain(incoming, 0);
+  const source = '/api/tracks/' + id + '/audio';
+  incoming.preload = 'auto';
+  if (incoming.getAttribute('src') !== source || incoming.error) incoming.src = source;
+  else incoming.currentTime = 0;
+  const cancelled = new Promise((_, reject) => {
+    request.cancel = () => reject(new Error('Cancelled'));
+    request.timeout = setTimeout(() => reject(new Error('The next song did not become ready.')), 8000);
+  });
+  try {
+    await Promise.race([incoming.play(), cancelled]);
+    if (generation !== playbackGeneration || outgoing !== audio || current !== previousId || !trackById(id)
+      || (options.previous && history.at(-1) !== id)
+      || (options.consume && queue[0] !== id) || (options.automatic && (sleepAfterSong || repeat === 2))
+      || (outgoing.paused && !outgoing.ended) || (sleepUntil && Date.now() >= sleepUntil)) {
+      if (fadeRequest === request) cancelTransition();
+      if (options.automatic && outgoing === audio && outgoing.ended && !checkSleep(true)) advance(true);
+      return;
+    }
+    fadeRequest = null;
+    clearTimeout(request.timeout);
+    // A slow incoming source must not fade out the old one before it can play.
+    const remaining = Math.max(0, (outgoing.duration - outgoing.currentTime) / outgoing.playbackRate);
+    const duration = Math.max(0, Math.min(sound.settings.crossfade, options.automatic ? remaining : 1,
+      Number.isFinite(incoming.duration) ? incoming.duration / incoming.playbackRate / 2 : 10));
+    outgoing.id = 'audio-next';
+    incoming.id = 'audio';
+    audio = incoming;
+    fadingOut = outgoing;
+    if (duration > .05 && !outgoing.ended) {
+      sound.fade(outgoing, incoming, duration);
+      fadeTimer = setTimeout(finishFade, duration * 1000 + 50);
+    } else finishFade();
+    commitTrack(id, recordHistory, options);
+  } catch (error) {
+    if (generation !== playbackGeneration) return;
+    fadeRequest = null;
+    incoming.pause();
+    sound.gain(outgoing, 1);
+    failedFade = `${previousId}:${id}`;
+    if (!options.automatic) toast('Could not start the next song. Your current song is still selected; try again.');
+    if (outgoing.ended && options.automatic) playTrack(id, recordHistory, {...options, noFade: true});
+  } finally { clearTimeout(request.timeout); }
+}
+
+function prepareTransition() {
+  if (!sound.canFade || audio.paused || audio.seeking || !queue.length || repeat === 2 || sleepAfterSong || fadeRequest || fadingOut) return;
+  const remaining = (audio.duration - audio.currentTime) / audio.playbackRate;
+  if (!Number.isFinite(remaining) || remaining <= 0 || (sleepUntil && sleepUntil <= Date.now() + remaining * 1000)) return;
+  const id = queue[0];
+  if (failedFade === `${current}:${id}` || id === current) return;
+  if (remaining <= sound.settings.crossfade + 8) {
+    const incoming = audioDecks.find(element => element !== audio);
+    const source = '/api/tracks/' + id + '/audio';
+    sound.gain(incoming, 0);
+    if (incoming.getAttribute('src') !== source) { incoming.preload = 'auto'; incoming.src = source; }
+  }
+  if (remaining <= sound.settings.crossfade) playTrack(id, true, {automatic: true, consume: true, cycle: repeat === 1});
 }
 
 function advance(ended = false) {
@@ -1074,26 +1225,29 @@ function advance(ended = false) {
     playedSeconds = 0;
     lastAudioTime = 0;
     audio.currentTime = 0;
-    audio.play().catch(() => {});
+    resumePlayback().catch(() => {});
     return;
   }
-  if (ended && repeat === 1 && current) queue.push(current);
+  if (ended && fadeRequest) return;
+  if (ended && repeat === 1 && current && !queue.length) {
+    playTrack(current, false, {noFade: true});
+    return;
+  }
   if (!queue.length) {
     if (!ended) toast('No more songs in the queue');
     player();
     savePlayback();
     return;
   }
-  playTrack(queue.shift());
+  playTrack(queue[0], true, {consume: true, cycle: ended && repeat === 1});
 }
 
 function previous() {
   if (audio.currentTime > 3 || !history.length) {
-    if (current) audio.currentTime = 0;
+    if (current) seekPlayback(0);
     return;
   }
-  if (current) queue.unshift(current);
-  playTrack(history.pop(), false);
+  playTrack(history.at(-1), false, {previous: true});
 }
 
 function toggle() {
@@ -1101,12 +1255,13 @@ function toggle() {
     if (queue.length) advance();
     else if (tracks.length) start(tracks, 0);
     else addMusic();
-  } else if (audio.paused) audio.play().catch(() => toast('Could not play this audio.'));
-  else audio.pause();
+  } else if (audio.paused) resumePlayback().catch(() => toast('Could not play this audio. Tap Play again.'));
+  else pausePlayback();
 }
 
 function player() {
   const track = trackById(current);
+  $('sound').classList.toggle('on', sound.settings.enabled);
   coverArt($('now-cover'), track);
   $('now-title').textContent = track?.title || 'Your next favourite awaits';
   $('now-artist').textContent = track?.artist || (queue.length ? queue.length + ' songs queued' : 'Choose a song to get started');
@@ -1172,8 +1327,7 @@ function nowPlaying() {
   seek.setAttribute('aria-label', 'Seek current song');
   seek.oninput = event => {
     if (Number.isFinite(audio.duration) && audio.duration > 0) {
-      audio.currentTime = Number(event.target.value) * audio.duration / 100;
-      position();
+      seekPlayback(Number(event.target.value) * audio.duration / 100);
     }
   };
   progress.append(identified(node('small'), 'np-elapsed'), seek, identified(node('small'), 'np-duration'));
@@ -1187,7 +1341,7 @@ function nowPlaying() {
   );
   const actions = node('div', undefined, 'actions');
   actions.append(button('Queue', queueDialog), identified(button('Sleep', () => $('sleep').click()), 'np-sleep'),
-    button('Song options', () => { const track = trackById(current); if (track) trackMenu(track); }));
+    identified(button('Sound', soundDialog), 'np-sound'), button('Song options', () => { const track = trackById(current); if (track) trackMenu(track); }));
   const next = identified(button('', queueDialog, 'up-next', 'View upcoming songs'), 'np-up-next');
   content.append(cover, details, progress, controls, actions, next);
   modal('Now Playing', content);
@@ -1218,6 +1372,7 @@ function updateNowPlaying() {
   $('np-repeat').setAttribute('aria-label', repeatLabel);
   $('np-repeat').setAttribute('aria-pressed', repeat > 0);
   $('np-sleep').textContent = $('sleep').textContent;
+  $('np-sound').classList.toggle('on', sound.settings.enabled);
   const next = trackById(queue[0]);
   const caption = node('span');
   caption.append(node('small', next ? 'Up next' : 'Make it a longer listen'), document.createTextNode(next ? `${next.title} · ${next.artist}` : 'Add songs from your library'));
@@ -1304,6 +1459,7 @@ function toggleShuffle() {
 }
 $('shuffle').onclick = toggleShuffle;
 function setRepeat(mode) {
+  if (fadeRequest) cancelTransition();
   repeat = mode;
   updatePlaybackModes();
   savePlayback();
@@ -1328,7 +1484,93 @@ function updateSleep() {
   if ($('np-sleep')) $('np-sleep').textContent = $('sleep').textContent;
 }
 
+function soundDialog() {
+  const content = node('div', undefined, 'sound-panel');
+  const intro = node('p', 'Shape your sound and let songs flow into each other. These settings affect playback on this browser only.', 'muted sound-intro');
+  const toggle = button(sound.settings.enabled ? 'EQ & crossfade on' : 'Enable EQ & crossfade', async () => {
+    toggle.disabled = true;
+    const enabled = !sound.settings.enabled;
+    cancelTransition();
+    sound.update({enabled});
+    try {
+      await sound.activate();
+      soundDialog();
+    } catch (error) {
+      sound.update({enabled: false});
+      soundDialog();
+      toast(error.message);
+    }
+  }, sound.settings.enabled ? 'primary' : undefined);
+  toggle.setAttribute('aria-pressed', sound.settings.enabled);
+  toggle.disabled = !sound.supported;
+  const presets = node('div', undefined, 'sound-presets');
+  const presetButtons = [];
+  for (const [name, values] of Object.entries(MusoSound.presets)) {
+    const choice = button(name, () => {
+      sound.update({bass: values[0], mid: values[1], treble: values[2]});
+      soundDialog();
+    });
+    choice.disabled = !sound.settings.enabled;
+    choice.values = values;
+    presetButtons.push(choice);
+    presets.append(choice);
+  }
+  function syncPresets() {
+    for (const choice of presetButtons) {
+      const selected = ['bass', 'mid', 'treble'].every((key, i) => sound.settings[key] === choice.values[i]);
+      choice.classList.toggle('primary', selected);
+      choice.setAttribute('aria-pressed', selected);
+    }
+    $('sound').classList.toggle('on', sound.settings.enabled);
+  }
+  const slider = (key, title, min, max, step, format, disabled = false) => {
+    const label = node('label', undefined, 'sound-slider');
+    const heading = node('span', undefined, 'sound-slider-heading');
+    const value = node('output', format(sound.settings[key]));
+    const input = node('input');
+    input.type = 'range'; input.min = min; input.max = max; input.step = step; input.value = sound.settings[key];
+    input.id = 'sound-' + key;
+    input.setAttribute('aria-label', title);
+    input.setAttribute('aria-valuetext', value.textContent);
+    input.disabled = disabled;
+    value.htmlFor = input.id;
+    input.oninput = () => {
+      if (key === 'crossfade' || key === 'speed') cancelTransition();
+      sound.update({[key]: Number(input.value)});
+      value.textContent = format(sound.settings[key]);
+      input.setAttribute('aria-valuetext', value.textContent);
+      syncPresets();
+    };
+    heading.append(node('span', title), value);
+    label.append(heading, input);
+    return label;
+  };
+  const db = value => (value > 0 ? '+' : '') + value + ' dB';
+  const eq = node('div', undefined, 'sound-eq');
+  eq.append(slider('bass', 'Bass', -6, 6, 1, db, !sound.settings.enabled),
+    slider('mid', 'Mids', -6, 6, 1, db, !sound.settings.enabled),
+    slider('treble', 'Treble', -6, 6, 1, db, !sound.settings.enabled));
+  const transition = node('div', undefined, 'sound-section');
+  transition.append(node('h3', 'Smooth transitions'), slider('crossfade', 'Crossfade', 0, 10, 1, value => value ? value + ' seconds' : 'Off', !sound.settings.enabled),
+    node('p', 'Overlap the end of a song with the start of the next. Manual skips use a shorter fade. Loop-song and “After this song” keep the full ending.', 'muted'));
+  const levels = node('div', undefined, 'sound-section');
+  levels.append(slider('volume', 'Volume', 0, 100, 1, value => value + '%'),
+    slider('speed', 'Playback speed', .75, 1.5, .05, value => value.toFixed(2) + '×'),
+    node('small', 'Speed changes preserve pitch where supported. EQ boosts may lower the overall volume to keep sound clear.'));
+  const actions = node('div', undefined, 'actions');
+  actions.append(button('Reset sound', () => {
+    cancelTransition(); sound.update(MusoSound.defaults); soundDialog();
+  }), button('Back to Now Playing', nowPlaying));
+  content.append(intro, toggle);
+  if (!sound.supported) content.append(node('p', 'This browser does not support EQ or crossfade. Volume and speed controls are still available.', 'muted'));
+  content.append(node('h3', 'Equalizer'), presets, eq, transition, levels, actions);
+  modal('Sound & transitions', content);
+  syncPresets();
+}
+$('sound').onclick = soundDialog;
+
 function setSleep(until = 0, afterSong = false) {
+  cancelTransition();
   sleepUntil = until;
   sleepAfterSong = afterSong;
   try { localStorage.setItem(sleepKey, JSON.stringify({until, afterSong})); } catch {}
@@ -1347,7 +1589,7 @@ function scheduleSleepCheck() {
 function checkSleep(ended = false) {
   if ((sleepUntil && Date.now() >= sleepUntil) || (ended && sleepAfterSong)) {
     setSleep();
-    audio.pause();
+    pausePlayback();
     savePlayback();
     toast('Sleep timer finished');
     return true;
@@ -1390,21 +1632,32 @@ $('sleep').onclick = () => {
   modal('Sleep timer', node('p', status), options);
 };
 $('seek').oninput = event => {
-  if (Number.isFinite(audio.duration)) audio.currentTime = Number(event.target.value) * audio.duration / 100;
+  if (Number.isFinite(audio.duration)) seekPlayback(Number(event.target.value) * audio.duration / 100);
 };
-audio.onended = () => { if (!checkSleep(true)) advance(true); };
-audio.onpause = () => { player(); savePlayback(); };
-audio.onplay = () => { checkSleep(); player(); };
-audio.onloadedmetadata = () => {
+for (const element of audioDecks) {
+element.onended = () => {
+  if (element !== audio) { if (element === fadingOut) finishFade(); return; }
+  if (!checkSleep(true)) advance(true);
+};
+element.onpause = () => {
+  if (element !== audio) return;
+  if (!element.ended) cancelTransition();
+  player(); savePlayback();
+};
+element.onplay = () => { if (element === audio) { checkSleep(); player(); } };
+element.onloadedmetadata = () => {
+  if (element !== audio) return;
   if (resumeAt !== null) {
     if (Number.isFinite(audio.duration) && resumeAt < audio.duration) audio.currentTime = resumeAt;
     resumeAt = null;
   }
   position();
 };
-audio.onseeked = () => { lastAudioTime = audio.currentTime; savePlayback(); };
-audio.ontimeupdate = () => {
-  checkSleep();
+element.onseeking = () => { if (element === audio) cancelTransition(); };
+element.onseeked = () => { if (element === audio) { lastAudioTime = audio.currentTime; savePlayback(); } };
+element.ontimeupdate = () => {
+  if (element !== audio) return;
+  if (checkSleep()) return;
   position();
   if (!audio.paused && Date.now() - lastSavedAt > 3000) savePlayback();
   const elapsed = audio.currentTime - lastAudioTime;
@@ -1420,10 +1673,15 @@ audio.ontimeupdate = () => {
       }
     }).catch(() => {});
   }
+  prepareTransition();
 };
-audio.onerror = () => { if (current) toast('This browser could not read the saved audio.'); };
+element.onerror = () => {
+  if (element === audio && current) { cancelTransition(); toast('This browser could not read the saved audio.'); }
+  else if (element === fadingOut) finishFade();
+};
+}
 if ('mediaSession' in navigator) {
-  for (const [action, callback] of Object.entries({play: () => audio.play().catch(() => {}), pause: () => audio.pause(), nexttrack: () => advance(), previoustrack: previous, seekto: event => { if (Number.isFinite(audio.duration)) audio.currentTime = event.seekTime; }})) {
+  for (const [action, callback] of Object.entries({play: () => resumePlayback().catch(() => {}), pause: pausePlayback, nexttrack: () => advance(), previoustrack: previous, seekto: event => seekPlayback(event.seekTime)})) {
     try { navigator.mediaSession.setActionHandler(action, callback); } catch { /* Browser support varies. */ }
   }
 }
@@ -1436,7 +1694,7 @@ function resumeAfterReload() {
   } catch { return; }
   if (!intent || !current || intent.track !== current || intent.sleepUntil && intent.sleepUntil <= Date.now()) return;
   if (performance.getEntriesByType('navigation')[0]?.type !== 'reload') return;
-  audio.play().catch(error => {
+  resumePlayback().catch(error => {
     if (error.name === 'NotAllowedError') toast('Tap Play to resume where you left off.');
   });
 }

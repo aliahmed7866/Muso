@@ -50,6 +50,7 @@ async function until(predicate) {
     audio.play = async () => { paused = false; audio.dispatchEvent(new w.Event('play')); };
     audio.pause = () => { paused = true; audio.dispatchEvent(new w.Event('pause')); };
     audio.load = () => {};
+    w.eval(fs.readFileSync(path.join(__dirname, '../static/sound.js'), 'utf8'));
     w.eval(fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8') + '\nwindow.testSleep = {restoreSleep, setSleep, resumeAfterReload}; window.testNetwork = {api, searchInto}; window.testUI = {refresh, position};');
     const saved = () => JSON.parse(w.localStorage.getItem('muso.playback.v1'));
     const library = async () => (await fetch(url + '/api/library')).json();

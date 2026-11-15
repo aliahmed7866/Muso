@@ -58,7 +58,7 @@ Browse the library by artist, album, or genre. Muso uses available tags, and you
 
 ## Playlists, queue, and recap
 
-On a phone, the bottom navigation keeps **Library**, **Discover**, **Playlists**, **Recap**, and **Imports** within reach. The compact player sits above it. Tap the current song to open **Now Playing** with larger artwork, seeking, like, previous/next, shuffle, repeat, sleep, and queue controls. Repeat in Now Playing cycles through off, queue, and song; the desktop repeat control also offers a named menu. **Queue** remains directly accessible from the compact player. These controls all operate the same audio element, so opening a sheet or changing screens does not restart playback.
+On a phone, the bottom navigation keeps **Library**, **Discover**, **Playlists**, **Recap**, and **Imports** within reach. The compact player sits above it. Tap the current song to open **Now Playing** with larger artwork, seeking, like, previous/next, shuffle, repeat, sleep, sound, and queue controls. Repeat in Now Playing cycles through off, queue, and song; the desktop repeat control also offers a named menu. **Queue** remains directly accessible from the compact player. Opening a sheet or changing screens does not restart playback.
 
 **Playlists** has a cover grid, song counts, durations, and a **New playlist** action. The desktop sidebar still offers direct playlist shortcuts. On phones, swipe the listening mixes horizontally to see all four. Search has a clear button and a reset action for empty results; library refresh keeps the current filter and typing position. Refreshing Discover keeps its search in place. Import badges highlight pending jobs or ones needing attention, and failed saves show feedback inside the open dialog.
 
@@ -73,6 +73,14 @@ Tap the repeat button to choose **Off**, **Repeat queue**, or **Loop current son
 **Sleep** offers 15, 30, 60, or 90 minutes, plus **After this song**. The timer shows its remaining minutes and remembers its deadline when the app is reopened. Stop after this song takes priority over repeat. Like playback itself, the timer needs Android to allow the browser to run; an overdue timer is checked when playback or the page resumes.
 
 **Recap** shows monthly plays, unique songs and artists, and your top songs and artists. Use the month buttons to look back, or save that month's top songs as a playlist. Monthly history begins with this update. Earlier play totals remain available for library sorting.
+
+### Sound and transitions
+
+Open **Now Playing → Sound** (or **Sound** in the desktop player). Volume and playback speed are available immediately. **Enable EQ & crossfade** turns on the bass/mids/treble equalizer and a three-second crossfade. Choose Balanced, Warm, Bass, Vocals, or Bright, or adjust each band from −6 to +6 dB. Boosted bands reserve output headroom to reduce clipping; boosting a band can therefore lower the overall level. Speed runs from 0.75× to 1.50× with pitch preservation where supported. Settings stay in this browser; **Reset sound** restores the defaults and bypasses EQ/crossfade. Saved audio files are never rewritten or re-encoded.
+
+Crossfade is adjustable from **Off** to **10 seconds**. With it enabled, the next queued song starts near the end of the current song and both gains ramp smoothly. The outgoing song continues until the incoming audio is ready; failed preparation retains the current selection and queue. Manual next/song selections use at most a one-second overlap so the controls remain responsive. Seeking or pausing cancels an overlap. Repeat-song and sleep-after-song preserve the full ending; a timed sleep stops both streams. Very short songs use a shorter overlap.
+
+EQ and crossfade use Web Audio and are opt-in. They need a supported browser and a playback gesture to activate after reopening. Android background/battery restrictions can still delay transition scheduling; ordinary end-of-song advancement remains the fallback. Browsers without Web Audio retain normal playback, volume and speed controls.
 
 If Termux already has a `~/bin/termux-url-opener`, the installer preserves it. Add an explicit call to `"$HOME/bin/muso" share "$1"` in the appropriate branch of your existing handler, or paste links into Muso.
 
@@ -112,9 +120,12 @@ python -m unittest discover -s tests -p 'test_*.py'
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening-dom.cjs
 npx playwright install chromium
 MUSO_TEST_PYTHON=.venv/bin/python node tests/listening.cjs
+MUSO_TEST_PYTHON=.venv/bin/python node tests/sound.cjs
 ```
 
 The DOM check exercises mixes, selection across filters, playlist membership, queue editing and saving, shuffle, sleep timer state and repeat precedence, and concurrent playlist edit conflicts against real Flask endpoints. It also checks the playlist screen, Now Playing controls, search focus/caret preservation, in-dialog save errors, and Discover search preservation. It simulates audio and dialog APIs. The browser check additionally covers actual playback, page reload, and overflow at widths from 320 to 1280 pixels. Set `MUSO_TEST_CHROMIUM` to use an existing Chromium executable, or `MUSO_TEST_SCREENSHOT` to save a phone screenshot.
+
+The sound browser check uses generated tones to verify real equalizer output and gain ramps, transition cancellation, failed incoming audio, repeat and sleep precedence, persisted settings, and aligned Recap rows with long and unavailable song titles. It writes Recap and sound screenshots when `MUSO_TEST_SCREENSHOT_DIR` is set.
 
 The supervisor checks exercise real child crashes, replacement supervisors, hung-child recovery, and exact checkout/library targeting. To exercise installation, startup hooks, deliberate stop, and recovery under real runit in an isolated temporary prefix, set `MUSO_TEST_RUNIT_BIN` to a directory containing `sv`, `runsv`, and `runsvdir` when running the Python tests. These checks do not alter a real Termux prefix.
 
