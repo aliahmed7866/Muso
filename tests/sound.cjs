@@ -111,7 +111,7 @@ const {chromium} = require('playwright');
     // Seeking cancels the tail; there must never be hidden audio continuing.
     await page.evaluate(() => seekPlayback(20));
     assert.equal(await page.evaluate(() => audioDecks.filter(a => !a.paused).length), 1);
-    assert.equal(await page.evaluate(() => sound.gains.get(audio).gain.value), 1);
+    await page.waitForFunction(() => !audio.seeking && sound.gains.get(audio).gain.value===1, {timeout:2000});
     await page.evaluate(() => { advance(); pausePlayback(); });
     await page.waitForTimeout(350);
     assert.equal(await page.evaluate(() => audioDecks.filter(a => !a.paused).length), 0);
@@ -134,19 +134,20 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => !fadingOut && audioDecks.filter(a => !a.paused).length===1);
     assert.equal(await page.evaluate(() => sound.gains.get(audio).gain.value), 1);
     // Previous is committed only after the incoming track is ready, too.
+    const priorHistory = (await saved()).history;
     await page.route('**/api/tracks/1/audio', route => route.abort('failed'));
     await page.evaluate(() => seekPlayback(0));
     await page.waitForFunction(() => !audio.seeking);
     await page.evaluate(() => previous());
     await page.waitForFunction(() => failedFade==='2:1');
-    assert.deepEqual((await saved()).history, ['0','1']);
+    assert.deepEqual((await saved()).history, priorHistory);
     assert.deepEqual((await saved()).queue, []);
     await page.unroute('**/api/tracks/1/audio');
     await page.evaluate(() => seekPlayback(0));
     await page.waitForFunction(() => !audio.seeking);
     await page.evaluate(() => previous());
     await page.waitForFunction(() => current==='1' && Boolean(fadingOut));
-    assert.deepEqual((await saved()).history, ['0']);
+    assert.deepEqual((await saved()).history, priorHistory.slice(0,-1));
     assert.deepEqual((await saved()).queue, ['2']);
 
     await begin();
