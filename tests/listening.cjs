@@ -57,6 +57,7 @@ const {chromium} = require('playwright');
     assert.equal(await page.locator('.selection-bar strong').textContent(), '3 selected');
     await button('Add to playlist').click();
     await button('Sample playlist', page.locator('#dialog')).click();
+    await page.locator('#dialog').waitFor({state: 'hidden'});
     assert.deepEqual((await library()).playlists[0].tracks, ['0', '1', '2']);
     await button('Queue selected').click();
     assert.deepEqual((await saved()).queue, ['0', '1', '2']);
@@ -80,6 +81,7 @@ const {chromium} = require('playwright');
     await button('Save as playlist').click();
     await page.getByRole('textbox', {name: 'New playlist name', exact: true}).fill('Listening session');
     await button('Create & add').click();
+    await page.locator('#dialog').waitFor({state: 'hidden'});
     assert.equal((await library()).playlists.find(p => p.name === 'Listening session').tracks.length, 4);
     // Play next promotes an already queued song instead of adding a duplicate.
     await button('Options for Dawn').click();

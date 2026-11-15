@@ -326,9 +326,12 @@ function render() {
   const active = document.activeElement;
   const label = active?.getAttribute('aria-label');
   const inBody = $('body').contains(active);
+  const shelfOffset = document.querySelector('.mix-shelf')?.scrollLeft || 0;
   const selection = inBody && active.tagName === 'INPUT' && ['search', 'text'].includes(active.type)
     ? [active.selectionStart, active.selectionEnd] : null;
   renderView();
+  const shelf = document.querySelector('.mix-shelf');
+  if (shelf) shelf.scrollLeft = shelfOffset;
   if (inBody && label) {
     const replacement = [...$('body').querySelectorAll('[aria-label]')].find(item => item.getAttribute('aria-label') === label);
     replacement?.focus({preventScroll: true});
@@ -1098,7 +1101,7 @@ function player() {
   $('now-artist').textContent = track?.artist || (queue.length ? queue.length + ' songs queued' : 'Choose a song to get started');
   $('play').replaceChildren(icon(audio.paused ? 'play' : 'pause'));
   $('play').setAttribute('aria-label', audio.paused ? 'Play' : 'Pause');
-  $('queue').textContent = queue.length ? 'Queue · ' + queue.length : 'Queue';
+  $('queue').replaceChildren(icon('playlist'), node('span', queue.length ? 'Queue · ' + queue.length : 'Queue', 'queue-label'));
   $('queue').setAttribute('aria-label', queue.length ? `Play queue, ${queue.length} songs up next` : 'Play queue');
   $('next').disabled = !queue.length;
   $('prev').disabled = !current;
@@ -1275,7 +1278,8 @@ function updatePlaybackModes() {
   $('shuffle').classList.toggle('on', shuffle);
   $('shuffle').setAttribute('aria-pressed', shuffle);
   const label = ['Repeat off','Repeat queue','Repeat song'][repeat];
-  $('repeat').textContent = repeat === 2 ? '↻¹' : '↻';
+  $('repeat').replaceChildren(icon('repeat'));
+  if (repeat === 2) $('repeat').append(node('sup', '1'));
   $('repeat').classList.toggle('on', repeat > 0);
   $('repeat').title = label;
   $('repeat').setAttribute('aria-label', label);
