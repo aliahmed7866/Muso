@@ -1,0 +1,41 @@
+name: Muso checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  listening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          npm install --no-save --package-lock=false jsdom@31.0.1 playwright@1.62.1
+          npx playwright install --with-deps chromium
+      - name: Backend and recovery checks
+        run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: DOM interactions against Flask
+        run: node tests/listening-dom.cjs
+      - name: Chromium playback and responsive layouts
+        env:
+          MUSO_TEST_SCREENSHOT_DIR: screenshots
+        run: node tests/listening.cjs
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: muso-layouts
+          path: screenshots/
+          if-no-files-found: ignore
+          retention-days: 7
