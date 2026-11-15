@@ -97,9 +97,13 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => sound.canFade);
     await button('Close').click();
 
-    const begin = () => page.evaluate(() => { setSleep(); setRepeat(0); sound.update({speed:1,crossfade:3}); start(['0','1','2'].map(trackById),0); });
+    const begin = async () => {
+      await page.evaluate(() => { setSleep(); setRepeat(0); sound.update({speed:1,crossfade:3}); start(['0','1','2'].map(trackById),0); });
+      // play() clears paused before metadata/decoding are ready. Seek only once playable.
+      await page.waitForFunction(() => current==='0' && audio.readyState>=2 && Number.isFinite(audio.duration)
+        && !audio.paused && !audio.seeking && !fadeRequest && !fadingOut);
+    };
     await begin();
-    await page.waitForFunction(() => current==='0' && !audio.paused && !fadeRequest && !fadingOut);
     await page.evaluate(() => seekPlayback(117.2));
     await page.waitForFunction(() => current==='1' && Boolean(fadingOut));
     assert.deepEqual((await saved()).queue, ['2']);
@@ -152,7 +156,6 @@ const {chromium} = require('playwright');
     assert.deepEqual((await saved()).queue, ['2']);
 
     await begin();
-    await page.waitForFunction(() => current==='0' && !audio.paused && !fadeRequest && !fadingOut);
     await page.evaluate(() => { setRepeat(1); seekPlayback(117.2); });
     await page.waitForFunction(() => current==='1' && Boolean(fadingOut));
     assert.deepEqual((await saved()).queue, ['2','0']);
@@ -161,9 +164,8 @@ const {chromium} = require('playwright');
     await page.waitForFunction(() => audioDecks.every(a => a.paused));
 
     await begin();
-    await page.waitForFunction(() => current==='0' && !audio.paused && !fadeRequest && !fadingOut);
     await page.evaluate(() => { setRepeat(2); seekPlayback(119.6); });
-    await page.waitForFunction(() => current==='0' && audio.currentTime<1 && !audio.paused);
+    await page.waitForFunction(() => current==='0' && audio.currentTime<1 && audio.readyState>=2 && !audio.seeking && !audio.paused);
     assert.deepEqual((await saved()).queue, ['1','2']);
     await page.evaluate(() => { setSleep(0,true); seekPlayback(119.6); });
     await page.waitForFunction(() => audio.paused);
