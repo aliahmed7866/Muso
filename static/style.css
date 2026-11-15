@@ -163,7 +163,7 @@ body:has(dialog[open]) { overflow: hidden; }
 .recap-ranks { padding: 0; margin: 10px 0 28px; list-style: none; }
 .recap-row { display: grid; grid-template-columns: 24px minmax(0,1fr) 54px; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #ffffff0c; }
 .recap-rank { color: var(--muted); font-size: 13px; text-align: center; font-variant-numeric: tabular-nums; }
-.recap-song { display: flex; align-items: center; justify-content: flex-start; gap: 12px; min-width: 0; width: 100%; padding: 5px 0; background: transparent; text-align: left; }
+.recap-song { display: flex; align-items: center; justify-content: flex-start; gap: 12px; min-width: 0; width: 100%; padding: 5px 0; border: 0; background: transparent; text-align: left; }
 .recap-song .cover { height: 42px; flex-basis: 42px; border-radius: 9px; }
 .recap-caption { display: block; min-width: 0; }
 .recap-caption strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; line-height: 1.45; color: var(--text); }

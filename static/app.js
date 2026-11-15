@@ -1121,6 +1121,10 @@ function seekPlayback(seconds) {
 
 function commitTrack(id, recordHistory, options = {}) {
   const previousId = current;
+  if (options.previous) {
+    if (previousId) queue.unshift(previousId);
+    if (history.at(-1) === id) history.pop();
+  }
   if (options.consume && queue[0] === id) queue.shift();
   if (options.cycle && repeat === 1 && previousId) queue.push(previousId);
   if (recordHistory && previousId && previousId !== id) history.push(previousId);
@@ -1167,6 +1171,7 @@ async function crossfadeTo(id, recordHistory, options) {
   try {
     await Promise.race([incoming.play(), cancelled]);
     if (generation !== playbackGeneration || outgoing !== audio || current !== previousId || !trackById(id)
+      || (options.previous && history.at(-1) !== id)
       || (options.consume && queue[0] !== id) || (options.automatic && (sleepAfterSong || repeat === 2))
       || (outgoing.paused && !outgoing.ended) || (sleepUntil && Date.now() >= sleepUntil)) {
       if (fadeRequest === request) cancelTransition();
@@ -1242,8 +1247,7 @@ function previous() {
     if (current) seekPlayback(0);
     return;
   }
-  if (current) queue.unshift(current);
-  playTrack(history.pop(), false);
+  playTrack(history.at(-1), false, {previous: true});
 }
 
 function toggle() {
