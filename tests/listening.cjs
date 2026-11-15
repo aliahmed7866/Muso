@@ -163,6 +163,7 @@ const {chromium} = require('playwright');
     for (const width of [320,390,720,1280]) {
       await page.setViewportSize({width,height:844});
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Overflow at ${width}px`);
+      assert.equal(await page.locator('.browse-modes button').evaluateAll(buttons => new Set(buttons.map(b => Math.round(b.getBoundingClientRect().top))).size), 1, 'Library categories must stay on one row');
       await page.locator('#now').click();
       assert.equal(await page.locator('#dialog').evaluate(d => d.scrollWidth <= d.clientWidth), true);
       assert.equal(await page.locator('#np-play').isVisible(), true);

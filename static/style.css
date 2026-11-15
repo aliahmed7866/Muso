@@ -34,8 +34,8 @@ input::placeholder { color: #9ca4ae; opacity: 1; }
 select { width: auto; max-width: 100%; font-size: 14px; }
 input[type=range] { width: 100%; min-width: 0; margin: 0; accent-color: var(--lime); cursor: pointer; height: 24px; }
 input[type=checkbox] { accent-color: var(--lime); }
-.skip-link { position: fixed; top: -100px; left: 16px; z-index: 10; padding: 12px 20px; background: var(--lime); color: var(--bg); border-radius: 10px; }
-.skip-link:focus { top: 12px; }
+.skip-link { position: fixed; top: 12px; left: 16px; z-index: 10; padding: 12px 20px; background: var(--lime); color: var(--bg); border-radius: 10px; clip-path: inset(50%); transform: translateY(-200%); }
+.skip-link:focus { clip-path: none; transform: none; }
 aside { position: sticky; top: 0; height: calc(100dvh - 100px); overflow-y: auto; border-right: 1px solid #2b3036; padding: 32px 18px; }
 .brand { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 30px; font-weight: 800; letter-spacing: -1.5px; padding: 0 12px 32px; }
 .logo { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 11px; background: var(--lime); color: #242c13; font-size: 28px; }
@@ -52,7 +52,8 @@ nav .selected, .side-playlists .selected { background: #d6fb7810; color: var(--l
 main { min-width: 0; width: 100%; max-width: 1450px; padding: 25px clamp(24px,4vw,56px) 145px; margin-inline: auto; }
 header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; gap: 12px; min-height: 44px; }
 #status { font-size: 12px; color: var(--muted); max-width: 38%; line-height: 1.5; }
-header .actions { flex-wrap: nowrap; gap: 4px; }
+header .actions { flex-wrap: nowrap; flex-shrink: 0; gap: 4px; }
+header .primary { white-space: nowrap; }
 header .primary { margin-left: 7px; }
 .hero { position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; min-height: 225px; padding: 34px 36px; border-radius: 22px; background: radial-gradient(ellipse at 85% 20%,#5e536b 0,transparent 60%),linear-gradient(110deg,#2a2637,#343c37); border: 1px solid #565563; }
 .hero p { font-size: 10px; letter-spacing: .19em; color: #ddd3f3; margin: 0 0 15px; font-weight: 700; }
@@ -200,8 +201,8 @@ body:has(dialog[open]) { overflow: hidden; }
   .mix-symbol { margin-bottom: 5px; width: 30px; height: 30px; }
   .mix-card strong { font-size: 13px; }
   .mix-card small { font-size: 11px; }
-  .browse-modes { justify-content: space-between; gap: 0; padding: 2px 0 7px; }
-  .browse-modes button { font-size: 13px; padding: 9px 13px; }
+  .browse-modes { flex-wrap: nowrap; justify-content: space-between; gap: 0; padding: 2px 0 7px; }
+  .browse-modes button { flex: 1; min-width: 0; font-size: 13px; padding: 9px 8px; }
   .toolbar { gap: 10px; }
   .search-field { flex-basis: 100%; }
   .toolbar select { flex: 1; }
@@ -248,7 +249,7 @@ body:has(dialog[open]) { overflow: hidden; }
   aside { padding-inline: 16px; }
   .brand-note { font-size: 10px; }
   .hero h1 { font-size: 36px; }
-  .browse-modes button { padding-inline: 11px; }
+  .browse-modes button { padding-inline: 5px; font-size: 12px; }
   .track .icon { width: 40px; min-width: 40px; flex-basis: 40px; }
   .mix-card { padding: 12px; }
   .collection-actions button { padding-inline: 10px; }
