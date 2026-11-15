@@ -111,7 +111,7 @@ const {chromium} = require('playwright');
     // Seeking cancels the tail; there must never be hidden audio continuing.
     await page.evaluate(() => seekPlayback(20));
     assert.equal(await page.evaluate(() => audioDecks.filter(a => !a.paused).length), 1);
-    await page.waitForFunction(() => !audio.seeking && sound.gains.get(audio).gain.value===1, {timeout:2000});
+    await page.waitForFunction(() => !audio.seeking && sound.gains.get(audio).gain.value===1, undefined, {timeout:2000});
     await page.evaluate(() => { advance(); pausePlayback(); });
     await page.waitForTimeout(350);
     assert.equal(await page.evaluate(() => audioDecks.filter(a => !a.paused).length), 0);

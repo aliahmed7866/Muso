@@ -1261,6 +1261,7 @@ function toggle() {
 
 function player() {
   const track = trackById(current);
+  $('sound').classList.toggle('on', sound.settings.enabled);
   coverArt($('now-cover'), track);
   $('now-title').textContent = track?.title || 'Your next favourite awaits';
   $('now-artist').textContent = track?.artist || (queue.length ? queue.length + ' songs queued' : 'Choose a song to get started');
@@ -1555,7 +1556,7 @@ function soundDialog() {
   const levels = node('div', undefined, 'sound-section');
   levels.append(slider('volume', 'Volume', 0, 100, 1, value => value + '%'),
     slider('speed', 'Playback speed', .75, 1.5, .05, value => value.toFixed(2) + '×'),
-    node('small', 'Speed changes preserve pitch where supported. Boosted EQ bands use automatic headroom to reduce clipping.'));
+    node('small', 'Speed changes preserve pitch where supported. EQ boosts may lower the overall volume to keep sound clear.'));
   const actions = node('div', undefined, 'actions');
   actions.append(button('Reset sound', () => {
     cancelTransition(); sound.update(MusoSound.defaults); soundDialog();
