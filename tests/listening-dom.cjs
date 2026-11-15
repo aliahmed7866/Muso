@@ -128,8 +128,12 @@ async function until(predicate) {
     assert.deepEqual(saved().queue, []);
     await click('Undo queue change', dialog);
     assert.deepEqual(saved().queue, original);
+    dialog.querySelector('[aria-label="Move Coral up"]').focus();
+    dialog.scrollTop = 120;
     await click('Move Coral up', dialog);
     assert.notDeepEqual(saved().queue, original);
+    assert.equal(d.activeElement.getAttribute('aria-label'), 'Move Coral down');
+    assert.equal(dialog.scrollTop, 120);
     await click('Undo queue change', dialog);
     assert.deepEqual(saved().queue, original);
     await click('Save as playlist', dialog);

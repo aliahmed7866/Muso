@@ -35,7 +35,7 @@ const {chromium} = require('playwright');
     const capture = async name => {
       if (!process.env.MUSO_TEST_SCREENSHOT_DIR) return;
       fs.mkdirSync(process.env.MUSO_TEST_SCREENSHOT_DIR, {recursive: true});
-      await page.screenshot({path: path.join(process.env.MUSO_TEST_SCREENSHOT_DIR, name + '.png'), fullPage: true});
+      await page.screenshot({path: path.join(process.env.MUSO_TEST_SCREENSHOT_DIR, name + '.png'), fullPage: !await page.locator('#dialog').evaluate(d => d.open)});
     };
     await page.goto(url);
     await page.waitForSelector('.track');
@@ -98,6 +98,7 @@ const {chromium} = require('playwright');
     await close();
     // Sleep-after-song takes precedence over looping and keeps upcoming music.
     await page.locator('#now').click();
+    assert.equal(await page.locator('#dialog').evaluate(d => d.contains(document.activeElement)), true);
     await capture('now-playing-phone');
     while (await page.locator('#np-repeat').getAttribute('aria-label') !== 'Repeat song') await page.locator('#np-repeat').click();
     await page.locator('#np-sleep').click();
@@ -168,6 +169,16 @@ const {chromium} = require('playwright');
       await close();
       await capture(`library-${width}`);
     }
+    // Real music titles and playlist names can be much longer than fixture names.
+    await page.evaluate(async () => {
+      await api('tracks/' + current, 'PATCH', {title: 'LongTitle'.repeat(30), artist: 'An artist with a very long name '.repeat(5)});
+      await refresh();
+    });
+    await page.setViewportSize({width:320,height:640});
+    await page.locator('#now').click();
+    assert.equal(await page.locator('#dialog').evaluate(d => d.scrollWidth <= d.clientWidth), true, 'Long title overflows Now Playing');
+    await close();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Long title overflows library');
     assert.deepEqual(errors, []);
     console.log('PASS: listening, Now Playing, playlist navigation, preserved search focus, and 320–1280px layout');
   } finally {

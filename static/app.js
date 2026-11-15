@@ -16,6 +16,7 @@ let browseBy = 'songs', browseGroup = '';
 let libraryReady = false, discoveryPolling = false;
 let disconnectedSince = 0;
 let initializing;
+let dialogOpener = null;
 const recapMonth = new Date();
 recapMonth.setDate(1);
 const playbackKey = 'muso.playback.v1';
@@ -142,12 +143,24 @@ function toast(message) {
 }
 
 function modal(title, ...content) {
-  // A sheet replaced by another sheet must start at its heading, not its old scroll offset.
+  if (!dialog.open) dialogOpener = document.activeElement;
+  const sameSheet = dialog.open && $('dialog-title').textContent === title;
+  const scroll = sameSheet ? dialog.scrollTop : 0;
+  const focused = sameSheet && dialog.contains(document.activeElement) ? document.activeElement : null;
+  const focusName = focused && (focused.getAttribute('aria-label') || focused.textContent);
   $('dialog-title').textContent = title;
   $('dialog-notice')?.remove();
   $('dialog-body').replaceChildren(...content);
-  dialog.scrollTop = 0;
   if (!dialog.open) dialog.showModal();
+  else {
+    const controls = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled)')];
+    const oppositeMove = focusName?.startsWith('Move ') ? focusName.replace(/ (up|down)$/, (_, direction) => direction === 'up' ? ' down' : ' up') : '';
+    const replacement = focusName && (controls.find(control => (control.getAttribute('aria-label') || control.textContent) === focusName)
+      || controls.find(control => control.getAttribute('aria-label') === oppositeMove));
+    (replacement || $('dialog-body').querySelector('button:not(:disabled), input:not(:disabled)') || $('close')).focus({preventScroll: true});
+  }
+  // Keep long queues in place when editing; a different sheet starts at the top.
+  dialog.scrollTop = scroll;
 }
 
 function form(label, placeholder, submit, action, value = '') {
@@ -1260,6 +1273,12 @@ function queueDialog() {
 }
 
 $('close').onclick = () => dialog.close();
+dialog.addEventListener('close', () => {
+  if (dialog.open) return;
+  const target = dialogOpener?.isConnected ? dialogOpener : $('heading');
+  target?.focus({preventScroll: true});
+  dialogOpener = null;
+});
 $('add').onclick = addMusic;
 function newPlaylist() { modal('New playlist', form('Playlist name', 'Playlist name', 'Create', async name => {
   const result = await api('playlists','POST',{name});
