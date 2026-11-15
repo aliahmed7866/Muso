@@ -16,7 +16,6 @@ let browseBy = 'songs', browseGroup = '';
 let libraryReady = false, discoveryPolling = false;
 let disconnectedSince = 0;
 let initializing;
-let dialogOpener = null;
 const recapMonth = new Date();
 recapMonth.setDate(1);
 const playbackKey = 'muso.playback.v1';
@@ -143,7 +142,6 @@ function toast(message) {
 }
 
 function modal(title, ...content) {
-  if (!dialog.open) dialogOpener = document.activeElement;
   const sameSheet = dialog.open && $('dialog-title').textContent === title;
   const scroll = sameSheet ? dialog.scrollTop : 0;
   const focused = sameSheet && dialog.contains(document.activeElement) ? document.activeElement : null;
@@ -1273,12 +1271,6 @@ function queueDialog() {
 }
 
 $('close').onclick = () => dialog.close();
-dialog.addEventListener('close', () => {
-  if (dialog.open) return;
-  const target = dialogOpener?.isConnected ? dialogOpener : $('heading');
-  target?.focus({preventScroll: true});
-  dialogOpener = null;
-});
 $('add').onclick = addMusic;
 function newPlaylist() { modal('New playlist', form('Playlist name', 'Playlist name', 'Create', async name => {
   const result = await api('playlists','POST',{name});
