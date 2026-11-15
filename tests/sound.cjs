@@ -112,6 +112,8 @@ const {chromium} = require('playwright');
     await page.evaluate(() => seekPlayback(20));
     assert.equal(await page.evaluate(() => audioDecks.filter(a => !a.paused).length), 1);
     await page.waitForFunction(() => !audio.seeking && sound.gains.get(audio).gain.value===1, undefined, {timeout:2000});
+    // Block before the first preparation, so a cached buffer cannot mask the failure.
+    await page.route('**/api/tracks/2/audio', route => route.abort('failed'));
     await page.evaluate(() => { advance(); pausePlayback(); });
     await page.waitForTimeout(350);
     assert.equal(await page.evaluate(() => audioDecks.filter(a => !a.paused).length), 0);
@@ -119,7 +121,6 @@ const {chromium} = require('playwright');
     assert.deepEqual((await saved()).queue, ['2']);
 
     // Failed preparation keeps the outgoing song and queue intact.
-    await page.route('**/api/tracks/2/audio', route => route.abort('failed'));
     await page.locator('#play').click();
     await page.waitForFunction(() => !audio.paused);
     await page.locator('#next').click();
