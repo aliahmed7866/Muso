@@ -10,6 +10,7 @@
 <meta name="muso-token" content="{{ token }}">
 <title>Muso · Your music library</title>
 <link rel="stylesheet" href="/static/style.css">
+<script defer src="/static/sound.js"></script>
 <script defer src="/static/app.js"></script>
 </head>
 <body>
@@ -44,9 +45,10 @@
     </div>
     <div class="progress"><small id="elapsed">0:00</small><input id="seek" type="range" min="0" max="100" value="0" aria-label="Playback position"><small id="duration">0:00</small></div>
   </div>
-  <div class="extras"><button id="queue">Queue</button><button id="sleep">Sleep</button></div>
+  <div class="extras"><button id="queue">Queue</button><button id="sound">Sound</button><button id="sleep">Sleep</button></div>
 </footer>
 <audio id="audio" preload="metadata"></audio>
+<audio id="audio-next" preload="none"></audio>
 <dialog id="dialog" aria-labelledby="dialog-title"><div class="dialog-head"><h2 id="dialog-title"></h2><button id="close" aria-label="Close" data-icon="close" class="icon-only"></button></div><div id="dialog-body"></div></dialog>
 <div id="toast" role="status" hidden></div>
 </body>

@@ -32,6 +32,10 @@ jobs:
         env:
           MUSO_TEST_SCREENSHOT_DIR: screenshots
         run: node tests/listening.cjs
+      - name: Sound processing, crossfade, and recap layouts
+        env:
+          MUSO_TEST_SCREENSHOT_DIR: screenshots
+        run: node tests/sound.cjs
       - uses: actions/upload-artifact@v5
         if: always()
         with:
