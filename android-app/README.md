@@ -1,4 +1,4 @@
-# Muso Android 0.2 — integrated library edition
+# Muso Android 0.3 — integrated library edition
 
 This APK bundles the existing Muso interface and Flask library logic in the app with Chaquopy. Requests run in process: **no Termux, localhost server, port, shell or separate installation is required**. Native Media3 ExoPlayer and a MediaSessionService own audio playback, the queue, media notification, Bluetooth transport, audio focus, headphones disconnect handling, sleep timers and listening counts. Closing/recreating the screen does not own or stop music.
 
@@ -10,7 +10,7 @@ This APK bundles the existing Muso interface and Flask library logic in the app 
 - Native volume and pitch-preserving speed. Device-supported Android equalizer with three UI bands and gain headroom.
 - Bundled yt-dlp and EJS with an Android isolated JavaScript engine, rather than subprocesses requiring Node/FFmpeg/Termux. Audio-only streams are retained without transcoding. Spotify links identify songs for a recording match, not Spotify audio downloads.
 - Receiving shared song links opens the import form for review.
-- Add music → Import Muso backup brings over songs, playlists, likes and listening history. Restore adds content; it does not clear an existing library. Reimporting the same backup does not duplicate songs, playlists or history.
+- Add music → Transfer & backup brings over songs, playlists, likes and listening history. Restore adds content; it does not clear an existing library. Reimporting the same backup does not duplicate songs, playlists or history.
 
 ## Install / compatibility
 
@@ -18,14 +18,15 @@ Android 8 or newer on **64-bit ARM phones** (plus x86_64 emulators), with a curr
 
 ## Bring your Termux library over
 
-With this branch checked out and Termux shared-storage access already enabled:
+1. In the APK open **Add music → Transfer & backup → Save Termux export tool**. Save to Downloads as `Muso-transfer.py`.
+2. In Termux, enable shared storage with `termux-setup-storage` if needed, and allow access. Run `python ~/storage/downloads/Muso-transfer.py` (the app has a Copy command button).
+3. Wait for Done. Return to the APK and choose the new `Muso-backup-YYYYMMDD-HHMMSS.zip` from Downloads. Review song/playlist/history counts, matching files and storage, then tap **Import into Muso**.
 
-```bash
-cd ~/Muso
-python termux/export-android.py ~/storage/downloads/Muso-backup.zip
-```
+The tool is self-contained Python using only the standard library; no internet access or update to the Termux checkout is needed. It detects `MUSO_DATA_DIR`, `MUSO_SERVICE_DATA_DIR`, the installed service's literal data directory, or `~/.local/share/muso`. For a custom location run `python ~/storage/downloads/Muso-transfer.py --data-dir /your/data/folder`. It never runs the service config as shell commands. Existing checkout users can also run `python termux/export-android.py`.
 
-The export reads `MUSO_DATA_DIR` or `~/.local/share/muso`. It copies songs and metadata; it never modifies the originals or includes tokens. Choose the resulting ZIP in **Add music → Import Muso backup**. Keep enough free space for both the archive and the imported library. Existing import jobs and browser-only playback/sound preferences are not migrated.
+Transfers preserve songs without re-encoding, playlists, likes and listening history. Existing content is merged, and repeating a restore skips duplicates. Originals stay in Termux. Keep enough free space for the selected ZIP and imported music. Portable backups allow up to 10 GB total and 512 MB per song. Jobs and browser-only preferences are not transferred.
+
+**Save Android backup** exports the app's library to a ZIP through the system document picker. Keep the app open until transfer/export finishes. Transfer status and the selected ZIP survive screen recreation; after process interruption, reopen this screen and retry safely. Incomplete external exports are removed when the app can detect a write failure. If Android kills the process during export, delete the incomplete ZIP and export again.
 
 ## Build and signing
 

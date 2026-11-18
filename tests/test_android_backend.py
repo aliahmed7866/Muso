@@ -72,6 +72,23 @@ class AndroidBackendTests(unittest.TestCase):
         Path(items[0]['path']).unlink()
         self.assertEqual('[]', android_backend.items(json.dumps([saved['id']])))
 
+    def test_backup_export_preview_import_and_location_boundary(self):
+        self.audio()
+        folder = Path(self.temp.name, 'transfers'); folder.mkdir()
+        archive = folder / 'test.zip'
+        class Observer:
+            def __init__(self): self.progress = []
+            def report(self, state): self.progress.append(json.loads(state))
+        observer = Observer()
+        self.assertEqual(1, json.loads(android_backend.export_backup(str(archive), observer))['tracks'])
+        preview = json.loads(android_backend.preview_backup(str(archive)))
+        self.assertEqual((1, 1), (preview['tracks'], preview['matches']))
+        result = json.loads(android_backend.import_backup(str(archive), observer))
+        self.assertEqual((0, 1, []), (result['saved'], result['duplicates'], result['errors']))
+        self.assertTrue(observer.progress)
+        self.assertTrue(archive.exists(), 'Native transfer manager owns staged archive lifetime')
+        with self.assertRaises(ValueError): android_backend.preview_backup(str(Path(self.temp.name, 'outside.zip')))
+
 
 if __name__ == '__main__':
     unittest.main()

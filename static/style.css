@@ -293,3 +293,26 @@ body:has(dialog[open]) { overflow: hidden; }
   .hero { min-height: 155px; padding-block: 23px; }
   .hero h1 { font-size: 38px; }
 }
+
+/* Portable library transfer, sized for small phones and large accessibility text. */
+.transfer-sheet { gap: 18px; }
+.transfer-intro { padding: 18px; border: 1px solid #626e49; border-radius: 16px; background: linear-gradient(120deg,#30382a,#252c33); }
+.transfer-intro small { color: var(--lime); font-size: 10px; letter-spacing: .12em; }
+.transfer-intro h3 { font-size: 24px; line-height: 1.15; margin: 10px 0; }
+.transfer-sheet p { line-height: 1.55; margin: 10px 0; }
+.transfer-step { position: relative; padding: 16px 16px 16px 54px; border: 1px solid var(--line); border-radius: 14px; }
+.transfer-step h3, .transfer-export h3 { margin: 0; font-size: 16px; }
+.transfer-number { position: absolute; left: 15px; top: 15px; display: grid; place-items: center; border-radius: 50%; width: 25px; height: 25px; background: var(--lime); color: #18200d; font-weight: 750; }
+.transfer-step pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: 10px; background: var(--bg); color: var(--lime); font-size: 13px; line-height: 1.6; user-select: text; }
+.transfer-step small { display: block; margin-top: 12px; }
+.transfer-live { padding: 18px; border: 1px solid var(--line); border-radius: 14px; display: grid; gap: 12px; overflow-wrap: anywhere; }
+.transfer-live[data-phase=done] { border-color: #788f48; }
+.transfer-live[data-phase=error], .transfer-live[data-phase=interrupted] { border-color: #aa7a59; }
+.transfer-live progress { width: 100%; height: 10px; accent-color: var(--lime); }
+.transfer-live .actions { flex-wrap: wrap; }
+.transfer-stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 0; }
+.transfer-stats>div { background: var(--raised); padding: 12px; border-radius: 10px; }
+.transfer-stats dt { color: var(--muted); font-size: 12px; }
+.transfer-stats dd { margin: 4px 0 0; font-weight: 750; font-size: 26px; }
+.transfer-error { color: #ffba8c; }
+.transfer-export { padding: 18px 0 0; border-top: 1px solid var(--line); }

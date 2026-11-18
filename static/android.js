@@ -73,7 +73,7 @@
       }();
     },
     importAudio: () => call('import'),
-    importBackup: () => call('backup')
+    transfer: (op, args = {}) => call('transfer', {op, ...args})
   };
   setInterval(() => native.onState && native.poll(), 500);
   document.addEventListener('visibilitychange', () => native.onState && native.poll());

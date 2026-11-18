@@ -26,6 +26,7 @@ async function until(predicate) {
     d.getElementById('dialog').close = function(){this.open=false;};
     const token = d.querySelector('meta[name=muso-token]').content;
     const calls = [];
+    let transfer = {phase:'idle'};
     const state = {ids:[], index:0, current:'', position:0, duration:120, playing:false, repeat:0, shuffle:false, sound:{}, sleepUntil:0, sleepAfterSong:false};
     w.HTMLMediaElement.prototype.play = () => { throw new Error('Android must not play browser audio'); };
     w.MusoBridge = {postMessage(raw) {
@@ -36,6 +37,12 @@ async function until(predicate) {
           if (action === 'api') {
             const response = await fetch(url + '/api/' + args.path, {method:args.method, headers:{'X-Muso-Token':token,'Content-Type':'application/json'}, body:args.body ? JSON.stringify(args.body):undefined});
             result = {status:response.status, data:await response.json()};
+          } else if (action === 'transfer') {
+            calls.push({action, ...args});
+            if (args.op === 'choose') transfer = {phase:'ready', filename:'Termux.zip', preview:{tracks:100, playlists:4, liked:20, events:500, matches:2, bytes:10000, canImport:true}};
+            if (args.op === 'start') transfer = {phase:'importing', message:'Importing song', completed:1, total:100};
+            if (args.op === 'discard') transfer = {phase:'idle'};
+            result = transfer;
           } else {
             calls.push(args);
             if (args.op === 'load' || args.op === 'queue' && state.current === args.current) {
@@ -78,7 +85,29 @@ async function until(predicate) {
     await w.MusoAndroid.poll();
     assert.equal(d.getElementById('now-title').textContent,['Amber','Blue','Coral','Dawn'][Number(state.current)]);
     assert.equal(d.getElementById('elapsed').textContent,'0:19');
-    console.log('PASS: native bridge, full library, controls, queue, background state reconciliation, no web audio, refresh preservation');
+    d.getElementById('dialog').close();
+    await click('Add music');
+    await click('Transfer & backup');
+    assert.ok(d.querySelector('.transfer-guide').textContent.includes('Save Termux export tool'));
+    await click('Copy command');
+    assert.equal(calls.at(-1).text,'python ~/storage/downloads/Muso-transfer.py');
+    await click('Choose backup ZIP');
+    assert.equal(d.querySelector('.transfer-stats dd').textContent,'100');
+    assert.equal(calls.filter(c=>c.action==='transfer'&&c.op==='start').length,0,'Preview must not start importing');
+    await click('Import into Muso');
+    assert.equal(d.querySelector('.transfer-live progress').value,1);
+    assert.equal(d.querySelector('.transfer-guide').hidden,true);
+    // Closing and reopening the transfer sheet reconnects to the active native job.
+    d.getElementById('dialog').close(); await click('Add music'); await click('Transfer & backup');
+    assert.equal(d.querySelector('.transfer-live progress').value,1);
+    transfer = {phase:'done',kind:'import',message:'Library transfer finished.',result:{saved:98,duplicates:2,errors:[]}};
+    await until(()=>d.querySelector('.transfer-live').textContent.includes('98 songs added'));
+    await click('Transfer another backup');
+    transfer = {phase:'interrupted',canRetry:true,message:'Transfer interrupted.'};
+    await until(()=>d.querySelector('.transfer-live').textContent.includes('Retry import safely'));
+    await click('Retry import safely');
+    assert.equal(d.querySelector('.transfer-live progress').value,1);
+    console.log('PASS: transfer preview, explicit start, progress, reconnect, results and retry; native bridge, full library, controls, queue, background state reconciliation, no web audio, refresh preservation');
   } catch (error) {console.error(logs);throw error;}
   finally {dom?.window.close();server.kill('SIGTERM');}
 })().catch(error=>{console.error(error);process.exitCode=1;});

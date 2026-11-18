@@ -939,13 +939,108 @@ function addMusic() {
   content.append(form('Music link', 'Paste a song link', 'Import link', url => importLink(url)),
     node('small', 'YouTube, Spotify tracks and SoundCloud. Spotify links let you choose a YouTube recording.'),
     label, status);
-  if (native) content.append(button('Import Muso backup', async () => {
-    status.textContent = 'Choose a Muso backup ZIP. Existing songs stay in your library.';
-    const result = await native.importBackup();
-    status.textContent = `${result.saved} imported. ${result.duplicates} already saved. ${result.errors.join(' ')}`;
-    await refresh();
-  }), node('small', 'Bring over your Termux library, playlists, likes and listening history using a Muso portable backup.'));
+  if (native) content.append(button('Transfer & backup', transferMusic, 'primary'), node('small', 'Bring your Termux library here, or save a backup of this app.'));
   modal('Add music', content);
+}
+
+let transferTimer;
+async function transferMusic() {
+  clearInterval(transferTimer);
+  const sheet = node('div', undefined, 'stack transfer-sheet');
+  const intro = node('div', undefined, 'transfer-intro');
+  intro.append(node('small', 'MUSO • TRANSFER & BACKUP'), node('h3', 'Bring your music with you'),
+    node('p', 'Move your Termux songs, playlists, likes and listening history into this app. Your originals stay in Termux.', 'muted'));
+  const live = node('section', undefined, 'transfer-live');
+  live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
+  const guide = node('div', undefined, 'stack transfer-guide');
+  let acting = false, last = '', refreshed = false;
+  const formatSize = value => value >= 1024 ** 3 ? (value / 1024 ** 3).toFixed(1) + ' GB' : Math.max(1, Math.ceil(value / 1024 ** 2)) + ' MB';
+  const act = async op => {
+    if (acting) return;
+    acting = true;
+    if (op === 'start') refreshed = false;
+    try { render(await native.transfer(op)); } finally { acting = false; }
+  };
+  const controls = [];
+  const control = (text, op, primary) => {
+    const item = button(text, () => act(op), primary ? 'primary' : undefined);
+    controls.push(item); return item;
+  };
+  const step = (number, title, description, ...items) => {
+    const card = node('section', undefined, 'transfer-step');
+    card.append(node('span', number, 'transfer-number'), node('h3', title), node('p', description, 'muted'), ...items);
+    return card;
+  };
+  const command = 'python ~/storage/downloads/Muso-transfer.py';
+  const code = node('code', command);
+  const pre = node('pre'); pre.append(code);
+  const copy = button('Copy command', async () => { await native.transfer('copy', {text: command}); toast('Command copied'); });
+  guide.append(
+    step('1', 'Save the export tool', 'Choose Downloads and keep the name Muso-transfer.py. No update to your Termux app is needed.', control('Save Termux export tool', 'tool')),
+    step('2', 'Run it in Termux', 'If shared storage is not enabled, run termux-setup-storage and allow access first. Then paste this command:', pre, copy,
+      node('small', 'Wait for “Done”. The tool finds your Muso library and creates a Muso-backup ZIP in Downloads.')),
+    step('3', 'Bring the backup here', 'Choose that ZIP from Downloads. You can review what is inside before importing.', control('Choose backup ZIP', 'choose', true))
+  );
+  const exportCard = node('section', undefined, 'transfer-export');
+  exportCard.append(node('h3', 'Back up this Android library'), node('p', 'Save all your songs and library history as a portable ZIP to restore in Muso later.', 'muted'), control('Save Android backup', 'export'));
+  sheet.append(intro, live, guide, exportCard);
+  modal('Transfer & backup', sheet);
+  function render(state) {
+    const signature = JSON.stringify(state);
+    if (signature === last) return;
+    last = signature;
+    const busy = ['choosing', 'reading', 'importing', 'exporting', 'saving'].includes(state.phase);
+    controls.forEach(item => { item.disabled = busy; });
+    guide.hidden = ['ready', 'importing'].includes(state.phase) || state.phase === 'done' && state.kind === 'import';
+    exportCard.hidden = guide.hidden;
+    live.replaceChildren();
+    if (state.phase === 'idle' && !state.message) { live.hidden = true; return; }
+    live.hidden = false;
+    live.dataset.phase = state.phase;
+    live.append(node('strong', state.message || 'Ready to transfer'));
+    if (busy && state.phase !== 'choosing') {
+      const progress = node('progress'); progress.setAttribute('aria-label', 'Transfer progress');
+      const total = state.phase === 'reading' ? state.totalBytes : state.total;
+      const completed = state.phase === 'reading' ? state.copiedBytes : state.completed;
+      if (total > 0) { progress.max = total; progress.value = completed || 0; }
+      live.append(progress, node('small', state.phase === 'reading' ? `${formatSize(state.copiedBytes || 0)} read` : state.total ? `${state.completed || 0} of ${state.total} songs` : 'Preparing…'),
+        node('p', 'Keep Muso open until this finishes. You can keep listening while it works.', 'muted'));
+    }
+    if (state.phase === 'ready') {
+      const p = state.preview;
+      live.append(node('p', state.filename || 'Muso backup', 'muted'));
+      const stats = node('dl', undefined, 'transfer-stats');
+      for (const [label, value] of [['Songs', p.tracks], ['Playlists', p.playlists], ['Liked songs', p.liked], ['Listens', p.events]]) {
+        const pair = node('div'); pair.append(node('dt', label), node('dd', String(value))); stats.append(pair);
+      }
+      live.append(stats, node('p', `${formatSize(p.bytes)} of music · ${p.matches} matching audio files already saved. Duplicates are skipped.`, 'muted'));
+      if (!p.canImport) live.append(node('p', `Free ${formatSize(p.requiredBytes - p.freeBytes)} more storage, then choose the backup again.`, 'transfer-error'));
+      const start = button('Import into Muso', () => act('start'), 'primary'); start.disabled = !p.canImport;
+      const actions = node('div', undefined, 'actions'); actions.append(start, button('Choose another backup', () => act('choose')), button('Cancel', () => act('discard'))); live.append(actions);
+    }
+    if (state.phase === 'done' && state.kind === 'import') {
+      const result = state.result;
+      live.append(node('p', `${result.saved} songs added · ${result.duplicates} already saved.`));
+      if (result.errors.length) {
+        const detail = node('details'); detail.append(node('summary', `${result.errors.length} files need attention`));
+        const list = node('ul'); result.errors.forEach(error => list.append(node('li', error))); detail.append(list); live.append(detail);
+        if (state.canRetry) live.append(button('Retry remaining files', () => act('start')));
+      } else live.append(node('p', 'Your playlists, likes and listening history are ready.', 'muted'));
+      live.append(button('Go to my library', () => { dialog.close(); navigate('library'); }, 'primary'), button('Transfer another backup', () => act('discard')));
+      if (!refreshed) { refreshed = true; refresh().catch(error => toast(error.message)); }
+    }
+    if (['error', 'interrupted'].includes(state.phase)) {
+      if (state.canRetry) live.append(button('Retry import safely', () => act('start'), 'primary'));
+      live.append(button('Choose backup ZIP', () => act('choose')), button('Dismiss', () => act('discard')));
+    }
+  }
+  const poll = async () => {
+    if (!dialog.open || $('dialog-title').textContent !== 'Transfer & backup') { clearInterval(transferTimer); return; }
+    if (acting) return;
+    try { render(await native.transfer('status')); } catch (error) { live.hidden = false; live.textContent = error.message; }
+  };
+  await poll();
+  transferTimer = setInterval(poll, 700);
 }
 
 function candidates(results, job) {

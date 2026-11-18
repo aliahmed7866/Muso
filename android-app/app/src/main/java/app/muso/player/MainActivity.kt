@@ -38,14 +38,19 @@ class MainActivity : ComponentActivity() {
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var importReply: String? = null
-    private var importingBackup = false
     private var destroyed = false
     private var pageReady = false
     private var sharedText: String? = null
+    private val transferWake = object : Runnable {
+        override fun run() {
+            if (destroyed) return
+            root.keepScreenOn = TransferManager.status().optString("phase") in setOf("reading", "importing", "exporting", "saving")
+            root.postDelayed(this, 1000)
+        }
+    }
     private val pickAudio = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val id = importReply ?: return@registerForActivityResult
         importReply = null
-        val backup = importingBackup
         EmbeddedEngine.io.execute {
             try {
                 val backend = EmbeddedEngine.start(this).get()
@@ -58,7 +63,7 @@ class MainActivity : ComponentActivity() {
                             if (it.moveToFirst()) it.getString(0) else null
                         } ?: "audio"
                         val ext = name.substringAfterLast('.', "").lowercase()
-                        require(if (backup) ext == "zip" else ext in setOf("mp3", "m4a", "flac", "wav", "ogg", "opus", "aac")) { "Unsupported audio: $name" }
+                        require(ext in setOf("mp3", "m4a", "flac", "wav", "ogg", "opus", "aac")) { "Unsupported audio: $name" }
                         val folder = File(filesDir, "library/imports").apply { mkdirs() }
                         file = File(folder, "${UUID.randomUUID()}.$ext")
                         contentResolver.openInputStream(uri)?.use { input ->
@@ -68,18 +73,11 @@ class MainActivity : ComponentActivity() {
                                     val count = input.read(buffer)
                                     if (count < 0) break
                                     total += count
-                                    require(total <= (if (backup) 10L * 1024 * 1024 * 1024 else 512L * 1024 * 1024)) { "Selected file is too large" }
+                                    require(total <= 512L * 1024 * 1024) { "Selected file is too large" }
                                     output.write(buffer, 0, count)
                                 }
                             }
                         } ?: error("Could not open $name")
-                        if (backup) {
-                            val result = JSONObject(backend.callAttr("import_backup", file.absolutePath).toString())
-                            saved += result.getInt("saved"); duplicates += result.getInt("duplicates")
-                            val issues = result.getJSONArray("errors")
-                            for (i in 0 until issues.length()) errors.put(issues.getString(i))
-                            continue
-                        }
                         val result = JSONObject(backend.callAttr("import_file", file.absolutePath, name).toString())
                         if (result.optBoolean("duplicate")) duplicates++ else saved++
                     } catch (error: Exception) { errors.put(error.message ?: "Could not import audio") }
@@ -90,13 +88,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val pickBackup = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) TransferManager.cancelled() else TransferManager.select(applicationContext, uri)
+    }
+    private val saveTool = registerForActivityResult(ActivityResultContracts.CreateDocument("text/x-python")) { uri ->
+        if (uri == null) TransferManager.cancelled() else TransferManager.save(applicationContext, uri, "tool")
+    }
+    private val saveBackup = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri == null) TransferManager.cancelled() else TransferManager.save(applicationContext, uri, "export")
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        TransferManager.initialize(applicationContext)
         window.statusBarColor = Color.rgb(16, 18, 24)
         window.navigationBarColor = Color.rgb(16, 18, 24)
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(16, 18, 24)) }
         setContentView(root)
+        root.post(transferWake)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
@@ -195,11 +205,30 @@ class MainActivity : ComponentActivity() {
         if (!id.matches(Regex("[0-9]{1,12}"))) return
         val action = request.optString("action")
         val args = request.optJSONObject("args") ?: JSONObject()
-        if (action == "import" || action == "backup") {
+        if (action == "import") {
             if (importReply != null) { fail(id, IllegalStateException("An import is already open")); return }
             importReply = id
-            importingBackup = action == "backup"
-            pickAudio.launch(if (importingBackup) arrayOf("application/zip", "application/x-zip-compressed") else arrayOf("audio/*", "application/ogg"))
+            pickAudio.launch(arrayOf("audio/*", "application/ogg"))
+            return
+        }
+        if (action == "transfer") {
+            try {
+                when (args.optString("op")) {
+                    "status" -> { }
+                    "choose" -> { TransferManager.beginPicker("import"); pickBackup.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) }
+                    "tool" -> { TransferManager.beginPicker("tool"); saveTool.launch("Muso-transfer.py") }
+                    "export" -> { TransferManager.beginPicker("export"); saveBackup.launch("Muso-backup-${java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())}.zip") }
+                    "start" -> TransferManager.importSelected(applicationContext)
+                    "discard" -> TransferManager.discard()
+                    "copy" -> {
+                        val command = args.getString("text").take(2000)
+                        getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("Muso Termux command", command))
+                    }
+                    else -> error("Unknown transfer action")
+                }
+                val status = TransferManager.status()
+                reply(id, status)
+            } catch (error: Exception) { fail(id, error) }
             return
         }
         val executor = if (action == "playback") EmbeddedEngine.commands else EmbeddedEngine.io
@@ -248,6 +277,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() {
         destroyed = true
+        root.removeCallbacks(transferWake)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         if (::web.isInitialized) { root.removeView(web); web.destroy() }
         super.onDestroy()

@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [feature/android-offline-apk]
-    paths: ['android-app/**', 'static/**', 'templates/**', '*.py', '.github/workflows/android-apk.yml']
+    paths: ['android-app/**', 'static/**', 'templates/**', 'termux/export-android.py', '*.py', '.github/workflows/android-apk.yml']
 permissions:
   contents: read
 concurrency:
@@ -61,6 +61,7 @@ jobs:
           script: |
             cd android-app && gradle :app:connectedDebugAndroidTest --stacktrace
             mkdir -p android-app/screenshots && adb pull /sdcard/Download/muso-library.png android-app/screenshots/library.png && adb pull /sdcard/Download/muso-now-playing.png android-app/screenshots/now-playing.png
+            adb pull /sdcard/Download/muso-transfer-guide.png android-app/screenshots/transfer-guide.png && adb pull /sdcard/Download/muso-transfer-preview.png android-app/screenshots/transfer-preview.png && adb pull /sdcard/Download/muso-transfer-result.png android-app/screenshots/transfer-result.png
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -2,6 +2,7 @@ package app.muso.player
 
 import android.content.ComponentName
 import android.os.Bundle
+import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
@@ -107,6 +108,12 @@ class AndroidPlayerTest {
                 } catch (_: Throwable) { false }
             }
             onWebView().withElement(findElement(Locator.ID, "now")).perform(webClick())
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.ID, "np-title")).check(webMatches(getText(), containsString("Android second")))
+                    true
+                } catch (_: Throwable) { false }
+            }
             screenshot("now-playing")
             command(JSONObject().put("op", "seek").put("seconds", 5))
             waitFor { state().getDouble("position") >= 5 }
@@ -116,6 +123,64 @@ class AndroidPlayerTest {
             waitFor { !state().getBoolean("playing") }
             assertEquals(0L, state().getLong("sleepUntil"))
             main { controller.release() }
+            onWebView().withElement(findElement(Locator.ID, "close")).perform(webClick())
+            onWebView().withElement(findElement(Locator.ID, "add")).perform(webClick())
+            onWebView().withElement(findElement(Locator.XPATH, "//button[text()='Transfer & backup']")).perform(webClick())
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.CSS_SELECTOR, ".transfer-guide")).check(webMatches(getText(), containsString("Save the export tool")))
+                    true
+                } catch (_: Throwable) { false }
+            }
+            screenshot("transfer-guide")
+            val source = File(context.filesDir, "library/transfers/fixture.zip")
+            source.delete()
+            assertEquals(2, JSONObject(backend.callAttr("export_backup", source.absolutePath).toString()).getInt("tracks"))
+            TransferManager.beginPicker("import")
+            TransferManager.select(context, Uri.fromFile(source))
+            waitFor { TransferManager.status().optString("phase") == "ready" }
+            assertEquals(2, TransferManager.status().getJSONObject("preview").getInt("tracks"))
+            scenario.recreate()
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.ID, "status")).check(webMatches(getText(), containsString("On this device")))
+                    true
+                } catch (_: Throwable) { false }
+            }
+            onWebView().withElement(findElement(Locator.ID, "add")).perform(webClick())
+            onWebView().withElement(findElement(Locator.XPATH, "//button[text()='Transfer & backup']")).perform(webClick())
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.CSS_SELECTOR, ".transfer-stats")).check(webMatches(getText(), containsString("Songs")))
+                    true
+                } catch (_: Throwable) { false }
+            }
+            screenshot("transfer-preview")
+            onWebView().withElement(findElement(Locator.XPATH, "//button[text()='Import into Muso']")).perform(webClick())
+            waitFor { TransferManager.status().optString("phase") == "done" }
+            val restored = TransferManager.status().getJSONObject("result")
+            assertEquals(0, restored.getInt("saved"))
+            assertEquals(2, restored.getInt("duplicates"))
+            assertEquals(0, restored.getJSONArray("errors").length())
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.CSS_SELECTOR, ".transfer-live")).check(webMatches(getText(), containsString("2 already saved")))
+                    true
+                } catch (_: Throwable) { false }
+            }
+            screenshot("transfer-result")
+            val tool = File(context.filesDir, "export-tool.py")
+            TransferManager.beginPicker("tool")
+            TransferManager.save(context, Uri.fromFile(tool), "tool")
+            waitFor { TransferManager.status().optString("phase") == "done" }
+            assertTrue(tool.readText().contains("def find_termux_library"))
+            val output = File(context.filesDir, "exported-library.zip")
+            TransferManager.beginPicker("export")
+            TransferManager.save(context, Uri.fromFile(output), "export")
+            waitFor { TransferManager.status().optString("phase") == "done" }
+            assertTrue(output.length() > 0)
+            java.util.zip.ZipFile(output).use { assertNotNull(it.getEntry("muso-backup.json")) }
+            source.delete(); tool.delete(); output.delete()
         } finally { scenario.close() }
     }
 }

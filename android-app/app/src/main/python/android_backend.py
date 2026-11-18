@@ -109,12 +109,25 @@ def import_file(path, filename):
         path.unlink(missing_ok=True)
 
 
-def import_backup(path):
-    from backup import import_library
+def _transfer_path(path):
     path = Path(path)
-    if path.parent.resolve() != _store.temp.resolve():
-        raise ValueError('Invalid backup location')
-    try:
-        return json.dumps(import_library(_store, path))
-    finally:
-        path.unlink(missing_ok=True)
+    if path.parent.resolve() != (_store.root / 'transfers').resolve():
+        raise ValueError('Invalid transfer location')
+    return path
+
+
+def preview_backup(path):
+    from backup import preview_library
+    return json.dumps(preview_library(_store, _transfer_path(path)))
+
+
+def import_backup(path, observer=None):
+    from backup import import_library
+    progress = (lambda state: observer.report(json.dumps(state))) if observer is not None else None
+    return json.dumps(import_library(_store, _transfer_path(path), progress))
+
+
+def export_backup(path, observer=None):
+    from backup import export_library
+    progress = (lambda state: observer.report(json.dumps(state))) if observer is not None else None
+    return json.dumps(dict(tracks=export_library(_store.root, _transfer_path(path), progress)))
