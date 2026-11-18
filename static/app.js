@@ -951,6 +951,7 @@ async function transferMusic() {
   intro.append(node('small', 'MUSO • TRANSFER & BACKUP'), node('h3', 'Bring your music with you'),
     node('p', 'Move your Termux songs, playlists, likes and listening history into this app. Your originals stay in Termux.', 'muted'));
   const live = node('section', undefined, 'transfer-live');
+  live.hidden = true;
   live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
   const guide = node('div', undefined, 'stack transfer-guide');
   let acting = false, last = '', refreshed = false;
@@ -993,6 +994,7 @@ async function transferMusic() {
     controls.forEach(item => { item.disabled = busy; });
     guide.hidden = ['ready', 'importing'].includes(state.phase) || state.phase === 'done' && state.kind === 'import';
     exportCard.hidden = guide.hidden;
+    intro.hidden = guide.hidden;
     live.replaceChildren();
     if (state.phase === 'idle' && !state.message) { live.hidden = true; return; }
     live.hidden = false;

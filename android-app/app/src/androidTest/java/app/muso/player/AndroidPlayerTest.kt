@@ -3,6 +3,10 @@ package app.muso.player
 import android.content.ComponentName
 import android.os.Bundle
 import android.net.Uri
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebView
+import java.util.concurrent.CountDownLatch
 import android.os.ParcelFileDescriptor
 import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
@@ -46,7 +50,21 @@ class AndroidPlayerTest {
         }
         assertTrue("Condition did not become true", predicate())
     }
-    private fun screenshot(name: String) {
+    private fun screenshot(name: String, scenario: ActivityScenario<MainActivity>) {
+        // DOM assertions can complete before Chromium has committed its next visual frame.
+        val frame = CountDownLatch(1)
+        scenario.onActivity { activity ->
+            fun findWeb(view: View): WebView? {
+                if (view is WebView) return view
+                if (view is ViewGroup) for (index in 0 until view.childCount) findWeb(view.getChildAt(index))?.let { return it }
+                return null
+            }
+            val web = findWeb(activity.window.decorView)!!
+            web.postVisualStateCallback(0, object : WebView.VisualStateCallback() {
+                override fun onComplete(requestId: Long) { web.postDelayed({ frame.countDown() }, 250) }
+            })
+        }
+        assertTrue("WebView did not commit its visual frame", frame.await(10, TimeUnit.SECONDS))
         ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand("screencap -p /sdcard/Download/muso-$name.png")).use { it.readBytes() }
     }
     private fun wav(name: String, seconds: Int, frequency: Double): File {
@@ -82,7 +100,7 @@ class AndroidPlayerTest {
                     true
                 } catch (_: Throwable) { false }
             }
-            screenshot("library")
+            screenshot("library", scenario)
             val future = main { MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java))).buildAsync() }
             val controller = future.get(30, TimeUnit.SECONDS)
             fun command(request: JSONObject): JSONObject {
@@ -114,7 +132,7 @@ class AndroidPlayerTest {
                     true
                 } catch (_: Throwable) { false }
             }
-            screenshot("now-playing")
+            screenshot("now-playing", scenario)
             command(JSONObject().put("op", "seek").put("seconds", 5))
             waitFor { state().getDouble("position") >= 5 }
             command(JSONObject().put("op", "queue").put("items", items).put("current", id2).put("repeat", 2))
@@ -132,7 +150,7 @@ class AndroidPlayerTest {
                     true
                 } catch (_: Throwable) { false }
             }
-            screenshot("transfer-guide")
+            screenshot("transfer-guide", scenario)
             val source = File(context.filesDir, "library/transfers/fixture.zip")
             source.delete()
             assertEquals(2, JSONObject(backend.callAttr("export_backup", source.absolutePath).toString()).getInt("tracks"))
@@ -155,7 +173,7 @@ class AndroidPlayerTest {
                     true
                 } catch (_: Throwable) { false }
             }
-            screenshot("transfer-preview")
+            screenshot("transfer-preview", scenario)
             onWebView().withElement(findElement(Locator.XPATH, "//button[text()='Import into Muso']")).perform(webClick())
             waitFor { TransferManager.status().optString("phase") == "done" }
             val restored = TransferManager.status().getJSONObject("result")
@@ -168,7 +186,7 @@ class AndroidPlayerTest {
                     true
                 } catch (_: Throwable) { false }
             }
-            screenshot("transfer-result")
+            screenshot("transfer-result", scenario)
             val tool = File(context.filesDir, "export-tool.py")
             TransferManager.beginPicker("tool")
             TransferManager.save(context, Uri.fromFile(tool), "tool")
