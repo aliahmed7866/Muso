@@ -19,6 +19,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -105,12 +106,12 @@ class PlaybackService : MediaSessionService() {
                 return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands.build()).build()
             }
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, command: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
-                if (controller.packageName != packageName || command.customAction != COMMAND) return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_PERMISSION_DENIED))
+                if (controller.packageName != packageName || command.customAction != COMMAND) return Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
                 return try {
                     val request = JSONObject(args.getString("json") ?: "{}")
                     handle(request)
                     Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS, Bundle().apply { putString("json", snapshot().toString()) }))
-                } catch (_: Exception) { Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_BAD_VALUE)) }
+                } catch (_: Exception) { Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE)) }
             }
         }).build()
         restore()
