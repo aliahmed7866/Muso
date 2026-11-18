@@ -16,6 +16,12 @@ def start(root, assets, worker=True):
     from app import create_app
     import importer
     import android_downloader
+    try:
+        import java
+    except ImportError:
+        pass  # Desktop backend tests do not have Android Java classes.
+    else:
+        import android_challenge
     importer.search = android_downloader.search
     importer.download = android_downloader.download
     _web = create_app(root)

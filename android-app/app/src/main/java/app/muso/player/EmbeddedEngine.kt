@@ -17,6 +17,7 @@ object EmbeddedEngine {
         startup?.let { return it }
         val app = context.applicationContext
         val future = io.submit<PyObject> {
+            ChallengeRuntime.initialize(app)
             if (!Python.isStarted()) Python.start(AndroidPlatform(app))
             val web = File(app.filesDir, "web-${BuildConfig.VERSION_CODE}")
             fun copyAsset(name: String, destination: File) {

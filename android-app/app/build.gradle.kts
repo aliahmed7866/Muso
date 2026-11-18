@@ -35,13 +35,14 @@ chaquopy {
         pip {
             install("Flask==3.1.2")
             install("mutagen==1.47.0")
-            install("yt-dlp==2026.3.17")
+            install("yt-dlp-ejs==0.8.0")
+            install("yt-dlp==2026.10.26")
         }
     }
     sourceSets.getByName("main").srcDir(layout.buildDirectory.dir("generated/python"))
 }
 tasks.configureEach {
-    if (name.startsWith("generate") && name.endsWith("PythonSources")) dependsOn(prepareCore)
+    if (name.endsWith("PythonSources")) dependsOn(prepareCore)
     if (name.startsWith("merge") && name.endsWith("Assets")) dependsOn(prepareWeb)
 }
 tasks.named("preBuild") { dependsOn(prepareCore, prepareWeb) }
@@ -49,6 +50,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.webkit:webkit:1.13.0")
+    implementation("androidx.javascriptengine:javascriptengine:1.0.0")
     implementation("androidx.media3:media3-exoplayer:1.6.1")
     implementation("androidx.media3:media3-session:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

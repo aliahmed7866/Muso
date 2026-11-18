@@ -63,5 +63,5 @@ def download(url, folder):
                           bitrate=round(info.get('abr') or 0))
     except Exception as exc:
         raise ImportFailure('This source did not provide downloadable audio on Android. '
-                            'Some YouTube tracks require a JavaScript challenge runtime which is not bundled. '
+                            'The source may be restricted or temporarily unavailable. '
                             'You can still import an audio file from your phone.') from exc

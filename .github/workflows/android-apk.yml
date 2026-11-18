@@ -28,6 +28,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+          cache-read-only: false
       - name: Build and lint APK
         working-directory: android-app
         run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:assembleDebugAndroidTest --stacktrace
@@ -63,6 +64,7 @@ jobs:
         with:
           name: muso-android-test-reports
           path: |
+            android-app/build/reports/
             android-app/app/build/reports/
             android-app/app/build/outputs/androidTest-results/
           retention-days: 14

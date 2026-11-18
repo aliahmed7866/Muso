@@ -47,6 +47,8 @@ class AndroidPlayerTest {
     }
     @Test fun fullAppAndNativeBackgroundQueue() {
         val backend = EmbeddedEngine.start(context).get(60, TimeUnit.SECONDS)
+        assertTrue(ChallengeRuntime.supported())
+        assertEquals("42", ChallengeRuntime.evaluate("console.log(6 * 7)"))
         val first = wav("Android first", 2, 440.0)
         val second = wav("Android second", 30, 880.0)
         val id1 = JSONObject(backend.callAttr("import_file", first.absolutePath, first.name).toString()).getString("id")
