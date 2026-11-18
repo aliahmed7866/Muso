@@ -2,7 +2,7 @@ package app.muso.player
 
 import android.content.ComponentName
 import android.os.Bundle
-import android.graphics.Bitmap
+import android.os.ParcelFileDescriptor
 import androidx.test.espresso.web.sugar.Web.onWebView
 import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
 import androidx.test.espresso.web.webdriver.DriverAtoms.getText
@@ -45,6 +45,9 @@ class AndroidPlayerTest {
         }
         assertTrue("Condition did not become true", predicate())
     }
+    private fun screenshot(name: String) {
+        ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand("screencap -p /sdcard/Download/muso-$name.png")).use { it.readBytes() }
+    }
     private fun wav(name: String, seconds: Int, frequency: Double): File {
         val samples = 22050 * seconds
         val data = ByteBuffer.allocate(44 + samples * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -78,10 +81,7 @@ class AndroidPlayerTest {
                     true
                 } catch (_: Throwable) { false }
             }
-            instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
-                File(context.getExternalFilesDir(null), "library.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                bitmap.recycle()
-            }
+            screenshot("library")
             val future = main { MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java))).buildAsync() }
             val controller = future.get(30, TimeUnit.SECONDS)
             fun command(request: JSONObject): JSONObject {
@@ -107,10 +107,7 @@ class AndroidPlayerTest {
                 } catch (_: Throwable) { false }
             }
             onWebView().withElement(findElement(Locator.ID, "now")).perform(webClick())
-            instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
-                File(context.getExternalFilesDir(null), "now-playing.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                bitmap.recycle()
-            }
+            screenshot("now-playing")
             command(JSONObject().put("op", "seek").put("seconds", 5))
             waitFor { state().getDouble("position") >= 5 }
             command(JSONObject().put("op", "queue").put("items", items).put("current", id2).put("repeat", 2))

@@ -60,7 +60,7 @@ jobs:
           disable-animations: true
           script: |
             cd android-app && gradle :app:connectedDebugAndroidTest --stacktrace
-            mkdir -p screenshots && adb pull /sdcard/Android/data/app.muso.player/files/. screenshots/ || true
+            mkdir -p android-app/screenshots && adb pull /sdcard/Download/muso-library.png android-app/screenshots/library.png && adb pull /sdcard/Download/muso-now-playing.png android-app/screenshots/now-playing.png
       - uses: actions/upload-artifact@v4
         if: always()
         with:

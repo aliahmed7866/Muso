@@ -54,13 +54,17 @@ async function until(predicate) {
         } catch (e) {w.MusoAndroid.resolve(id,null,e.message);}
       },1);
     }};
-    for (const file of ['android.js','sound.js','app.js']) w.eval(fs.readFileSync(path.join(__dirname,'../static',file),'utf8'));
+    for (const file of ['android.js','sound.js','app.js']) w.eval(fs.readFileSync(path.join(__dirname,'../static',file),'utf8') + (file === 'app.js' ? '\nwindow.testQueue = addToQueue;' : '')); 
     await until(() => d.querySelectorAll('.track').length === 4);
     assert.equal(d.getElementById('install').hidden,true);
     const click = async text => { const el=[...d.querySelectorAll('button')].find(b=>(b.getAttribute('aria-label')||b.textContent)===text);assert.ok(el,text);el.click();await wait(30);};
+    w.testQueue(['0','1']);
+    await until(() => state.ids.length === 2);
+    assert.equal(state.playing,false,'Queuing does not autoplay');
     await click('Play all');
     await until(() => state.playing);
-    assert.equal(state.ids.length,4);
+    assert.equal(state.ids.length-state.index,4);
+    const initialIndex=state.index;
     const playing=state.current;
     d.getElementById('play').click();await until(()=>!state.playing);
     d.getElementById('play').click();await until(()=>state.playing);
@@ -68,9 +72,9 @@ async function until(predicate) {
     await click('Open Now Playing');
     assert.equal(d.getElementById('np-title').textContent,d.getElementById('now-title').textContent);
     d.getElementById('np-next').click();await until(()=>state.current!==playing);
-    assert.equal(calls.filter(x=>x.op==='load').at(-1).index,1);
+    assert.equal(calls.filter(x=>x.op==='load').at(-1).index,initialIndex+1);
     // A transition made by the Android service is reflected without reloading the library.
-    state.index=2;state.current=state.ids[2];state.position=19;
+    state.index=initialIndex+2;state.current=state.ids[state.index];state.position=19;
     await w.MusoAndroid.poll();
     assert.equal(d.getElementById('now-title').textContent,['Amber','Blue','Coral','Dawn'][Number(state.current)]);
     assert.equal(d.getElementById('elapsed').textContent,'0:19');

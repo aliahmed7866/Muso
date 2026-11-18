@@ -210,8 +210,10 @@ async function refresh() {
     audio.removeAttribute('src');
     audio.load();
   }
+  const previousQueueSize = queue.length + history.length;
   queue = queue.filter(trackById);
   history = history.filter(trackById);
+  if (native && previousQueueSize !== queue.length + history.length) savePlayback();
   selected = new Set([...selected].filter(trackById));
   if (view === 'discover' && updateDailyControls) updateDailyControls();
   else render();
@@ -1730,6 +1732,7 @@ if (native) {
   $('install').hidden = true;
   window.addEventListener('muso-native-error', event => toast(event.detail));
   native.onState = state => {
+    const previousCurrent = current, previousQueue = JSON.stringify(queue);
     const ids = state.ids || [];
     current = state.current || '';
     history = ids.slice(0, state.index).filter(trackById);
@@ -1740,6 +1743,7 @@ if (native) {
     sleepAfterSong = Boolean(state.sleepAfterSong);
     sound.settings = {...MusoSound.defaults, ...state.sound, crossfade: 0};
     updatePlaybackModes(); updateSleep(); player();
+    if (dialog.open && $('dialog-title').textContent === 'Play queue' && (current !== previousCurrent || JSON.stringify(queue) !== previousQueue)) queueDialog();
   };
   const shared = () => {
     if (!native.shared) return;
