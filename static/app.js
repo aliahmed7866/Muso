@@ -1,8 +1,9 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let audio = $('audio');
-const audioDecks = [audio, $('audio-next')];
-const sound = new MusoSound(audioDecks);
+const native = window.MusoAndroid;
+let audio = native ? native.audio : $('audio');
+const audioDecks = native ? [] : [audio, $('audio-next')];
+const sound = native ? native.createSound(MusoSound) : new MusoSound(audioDecks);
 let fadeRequest = null, fadingOut = null, fadeTimer = null, playbackGeneration = 0, failedFade = '';
 const dialog = $('dialog');
 const token = document.querySelector('meta[name=muso-token]').content;
@@ -85,6 +86,7 @@ function button(text, action, cls, label) {
 }
 
 async function api(path, method = 'GET', data) {
+  if (native) return native.api(path, method, data);
   const headers = {'X-Muso-Token': token};
   if (data && !(data instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
@@ -208,8 +210,10 @@ async function refresh() {
     audio.removeAttribute('src');
     audio.load();
   }
+  const previousQueueSize = queue.length + history.length;
   queue = queue.filter(trackById);
   history = history.filter(trackById);
+  if (native && previousQueueSize !== queue.length + history.length) savePlayback();
   selected = new Set([...selected].filter(trackById));
   if (view === 'discover' && updateDailyControls) updateDailyControls();
   else render();
@@ -220,10 +224,9 @@ function initializeLibrary() {
   if (libraryReady) return Promise.resolve();
   if (!initializing) {
     $('status').textContent = 'Connecting to Muso…';
-    initializing = refresh().then(() => {
-      restorePlayback();
-      restoreSleep();
-      resumeAfterReload();
+    initializing = refresh().then(async () => {
+      if (native) await native.command('state');
+      else { restorePlayback(); restoreSleep(); resumeAfterReload(); }
       libraryReady = true;
       $('status').textContent = '● On this device';
     }).catch(error => {
@@ -924,12 +927,122 @@ function addMusic() {
     status.textContent = saved + ' imported. ' + (skipped ? skipped + ' already in your library. ' : '') + failures.join(' ');
     try { await refresh(); } catch (error) { toast(error.message); }
   };
-  label.append(upload);
+  if (native) {
+    label.replaceChildren(button('Choose audio files', async () => {
+      status.textContent = 'Choose files from your phone…';
+      const result = await native.importAudio();
+      status.textContent = `${result.saved} imported. ${result.duplicates} already saved. ${result.errors.join(' ')}`;
+      await refresh();
+    }, 'primary'));
+  } else label.append(upload);
   const content = node('div', undefined, 'stack');
   content.append(form('Music link', 'Paste a song link', 'Import link', url => importLink(url)),
     node('small', 'YouTube, Spotify tracks and SoundCloud. Spotify links let you choose a YouTube recording.'),
     label, status);
+  if (native) content.append(button('Transfer & backup', transferMusic, 'primary'), node('small', 'Bring your Termux library here, or save a backup of this app.'));
   modal('Add music', content);
+}
+
+let transferTimer;
+async function transferMusic() {
+  clearInterval(transferTimer);
+  const sheet = node('div', undefined, 'stack transfer-sheet');
+  const intro = node('div', undefined, 'transfer-intro');
+  intro.append(node('small', 'MUSO • TRANSFER & BACKUP'), node('h3', 'Bring your music with you'),
+    node('p', 'Move your Termux songs, playlists, likes and listening history into this app. Your originals stay in Termux.', 'muted'));
+  const live = node('section', undefined, 'transfer-live');
+  live.hidden = true;
+  live.setAttribute('aria-live', 'polite'); live.setAttribute('aria-atomic', 'true');
+  const guide = node('div', undefined, 'stack transfer-guide');
+  let acting = false, last = '', refreshed = false;
+  const formatSize = value => value >= 1024 ** 3 ? (value / 1024 ** 3).toFixed(1) + ' GB' : Math.max(1, Math.ceil(value / 1024 ** 2)) + ' MB';
+  const act = async op => {
+    if (acting) return;
+    acting = true;
+    if (op === 'start') refreshed = false;
+    try { render(await native.transfer(op)); } finally { acting = false; }
+  };
+  const controls = [];
+  const control = (text, op, primary) => {
+    const item = button(text, () => act(op), primary ? 'primary' : undefined);
+    controls.push(item); return item;
+  };
+  const step = (number, title, description, ...items) => {
+    const card = node('section', undefined, 'transfer-step');
+    card.append(node('span', number, 'transfer-number'), node('h3', title), node('p', description, 'muted'), ...items);
+    return card;
+  };
+  const command = 'python ~/storage/downloads/Muso-transfer.py';
+  const code = node('code', command);
+  const pre = node('pre'); pre.append(code);
+  const copy = button('Copy command', async () => { await native.transfer('copy', {text: command}); toast('Command copied'); });
+  guide.append(
+    step('1', 'Save the export tool', 'Choose Downloads and keep the name Muso-transfer.py. No update to your Termux app is needed.', control('Save Termux export tool', 'tool')),
+    step('2', 'Run it in Termux', 'If shared storage is not enabled, run termux-setup-storage and allow access first. Then paste this command:', pre, copy,
+      node('small', 'Wait for “Done”. The tool finds your Muso library and creates a Muso-backup ZIP in Downloads.')),
+    step('3', 'Bring the backup here', 'Choose that ZIP from Downloads. You can review what is inside before importing.', control('Choose backup ZIP', 'choose', true))
+  );
+  const exportCard = node('section', undefined, 'transfer-export');
+  exportCard.append(node('h3', 'Back up this Android library'), node('p', 'Save all your songs and library history as a portable ZIP to restore in Muso later.', 'muted'), control('Save Android backup', 'export'));
+  sheet.append(intro, live, guide, exportCard);
+  modal('Transfer & backup', sheet);
+  function render(state) {
+    const signature = JSON.stringify(state);
+    if (signature === last) return;
+    last = signature;
+    const busy = ['choosing', 'reading', 'importing', 'exporting', 'saving'].includes(state.phase);
+    controls.forEach(item => { item.disabled = busy; });
+    guide.hidden = ['ready', 'importing'].includes(state.phase) || state.phase === 'done' && state.kind === 'import';
+    exportCard.hidden = guide.hidden;
+    intro.hidden = guide.hidden;
+    live.replaceChildren();
+    if (state.phase === 'idle' && !state.message) { live.hidden = true; return; }
+    live.hidden = false;
+    live.dataset.phase = state.phase;
+    live.append(node('strong', state.message || 'Ready to transfer'));
+    if (busy && state.phase !== 'choosing') {
+      const progress = node('progress'); progress.setAttribute('aria-label', 'Transfer progress');
+      const total = state.phase === 'reading' ? state.totalBytes : state.total;
+      const completed = state.phase === 'reading' ? state.copiedBytes : state.completed;
+      if (total > 0) { progress.max = total; progress.value = completed || 0; }
+      live.append(progress, node('small', state.phase === 'reading' ? `${formatSize(state.copiedBytes || 0)} read` : state.total ? `${state.completed || 0} of ${state.total} songs` : 'Preparing…'),
+        node('p', 'Keep Muso open until this finishes. You can keep listening while it works.', 'muted'));
+    }
+    if (state.phase === 'ready') {
+      const p = state.preview;
+      live.append(node('p', state.filename || 'Muso backup', 'muted'));
+      const stats = node('dl', undefined, 'transfer-stats');
+      for (const [label, value] of [['Songs', p.tracks], ['Playlists', p.playlists], ['Liked songs', p.liked], ['Listens', p.events]]) {
+        const pair = node('div'); pair.append(node('dt', label), node('dd', String(value))); stats.append(pair);
+      }
+      live.append(stats, node('p', `${formatSize(p.bytes)} of music · ${p.matches} matching audio files already saved. Duplicates are skipped.`, 'muted'));
+      if (!p.canImport) live.append(node('p', `Free ${formatSize(p.requiredBytes - p.freeBytes)} more storage, then choose the backup again.`, 'transfer-error'));
+      const start = button('Import into Muso', () => act('start'), 'primary'); start.disabled = !p.canImport;
+      const actions = node('div', undefined, 'actions'); actions.append(start, button('Choose another backup', () => act('choose')), button('Cancel', () => act('discard'))); live.append(actions);
+    }
+    if (state.phase === 'done' && state.kind === 'import') {
+      const result = state.result;
+      live.append(node('p', `${result.saved} songs added · ${result.duplicates} already saved.`));
+      if (result.errors.length) {
+        const detail = node('details'); detail.append(node('summary', `${result.errors.length} files need attention`));
+        const list = node('ul'); result.errors.forEach(error => list.append(node('li', error))); detail.append(list); live.append(detail);
+        if (state.canRetry) live.append(button('Retry remaining files', () => act('start')));
+      } else live.append(node('p', 'Your playlists, likes and listening history are ready.', 'muted'));
+      live.append(button('Go to my library', () => { dialog.close(); navigate('library'); }, 'primary'), button('Transfer another backup', () => act('discard')));
+      if (!refreshed) { refreshed = true; refresh().catch(error => toast(error.message)); }
+    }
+    if (['error', 'interrupted'].includes(state.phase)) {
+      if (state.canRetry) live.append(button('Retry import safely', () => act('start'), 'primary'));
+      live.append(button('Choose backup ZIP', () => act('choose')), button('Dismiss', () => act('discard')));
+    }
+  }
+  const poll = async () => {
+    if (!dialog.open || $('dialog-title').textContent !== 'Transfer & backup') { clearInterval(transferTimer); return; }
+    if (acting) return;
+    try { render(await native.transfer('status')); } catch (error) { live.hidden = false; live.textContent = error.message; }
+  };
+  await poll();
+  transferTimer = setInterval(poll, 700);
 }
 
 function candidates(results, job) {
@@ -1042,6 +1155,7 @@ function shuffleQueue() {
 }
 
 function savePlayback() {
+  if (native) { native.sync(current, queue, history, repeat, shuffle); return; }
   const position = resumeAt ?? (audio.ended ? 0 : audio.currentTime);
   try {
     localStorage.setItem(playbackKey, JSON.stringify({
@@ -1099,6 +1213,7 @@ function finishFade() {
 }
 
 function resumePlayback() {
+  if (native) return native.command('play');
   const element = audio, generation = playbackGeneration;
   if (!sound.context && !sound.settings.enabled) return element.play();
   return sound.activate().then(() => {
@@ -1107,11 +1222,13 @@ function resumePlayback() {
 }
 
 function pausePlayback() {
+  if (native) { native.command('pause').catch(error => toast(error.message)); return; }
   cancelTransition();
   audio.pause();
 }
 
 function seekPlayback(seconds) {
+  if (native) { native.command('seek', {seconds}).catch(error => toast(error.message)); return; }
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
   cancelTransition();
   failedFade = '';
@@ -1135,7 +1252,7 @@ function commitTrack(id, recordHistory, options = {}) {
   lastAudioTime = 0;
   resumeAt = null;
   failedFade = '';
-  savePlayback();
+  if (!native) savePlayback();
   player();
   if (dialog.open && $('dialog-title').textContent === 'Play queue') queueDialog();
 }
@@ -1143,6 +1260,11 @@ function commitTrack(id, recordHistory, options = {}) {
 function playTrack(id, recordHistory = true, options = {}) {
   const track = trackById(id);
   if (!track) return;
+  if (native) {
+    commitTrack(id, recordHistory, options);
+    native.command('load', {current, ids: [...history, current, ...queue], index: history.length, repeat, shuffle}).catch(error => toast(error.message));
+    return;
+  }
   cancelTransition();
   if (!options.noFade && sound.canFade && current && current !== id && !audio.paused && audio.readyState >= 2) {
     crossfadeTo(id, recordHistory, options);
@@ -1243,6 +1365,7 @@ function advance(ended = false) {
 }
 
 function previous() {
+  if (native) { native.command('previous').catch(error => toast(error.message)); return; }
   if (audio.currentTime > 3 || !history.length) {
     if (current) seekPlayback(0);
     return;
@@ -1276,7 +1399,7 @@ function player() {
   for (const row of document.querySelectorAll('.track[data-track-id]')) {
     row.classList.toggle('playing', row.dataset.trackId === current);
   }
-  if ('mediaSession' in navigator && track) {
+  if (!native && 'mediaSession' in navigator && track) {
     navigator.mediaSession.metadata = new MediaMetadata({title: track.title, artist: track.artist, album: track.album});
     navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
   }
@@ -1486,8 +1609,8 @@ function updateSleep() {
 
 function soundDialog() {
   const content = node('div', undefined, 'sound-panel');
-  const intro = node('p', 'Shape your sound and let songs flow into each other. These settings affect playback on this browser only.', 'muted sound-intro');
-  const toggle = button(sound.settings.enabled ? 'EQ & crossfade on' : 'Enable EQ & crossfade', async () => {
+  const intro = node('p', native ? 'Sound settings apply to native playback, including while the screen is off. Equalizer support depends on your device.' : 'Shape your sound and let songs flow into each other. These settings affect playback on this browser only.', 'muted sound-intro');
+  const toggle = button(sound.settings.enabled ? (native ? 'Equalizer on' : 'EQ & crossfade on') : (native ? 'Enable equalizer' : 'Enable EQ & crossfade'), async () => {
     toggle.disabled = true;
     const enabled = !sound.settings.enabled;
     cancelTransition();
@@ -1553,6 +1676,7 @@ function soundDialog() {
   const transition = node('div', undefined, 'sound-section');
   transition.append(node('h3', 'Smooth transitions'), slider('crossfade', 'Crossfade', 0, 10, 1, value => value ? value + ' seconds' : 'Off', !sound.settings.enabled),
     node('p', 'Overlap the end of a song with the start of the next. Manual skips use a shorter fade. Loop-song and “After this song” keep the full ending.', 'muted'));
+  if (native) transition.replaceChildren(node('p', 'Native playback uses gapless transitions where the audio files support them. Crossfade is not included in this Android build.', 'muted'));
   const levels = node('div', undefined, 'sound-section');
   levels.append(slider('volume', 'Volume', 0, 100, 1, value => value + '%'),
     slider('speed', 'Playback speed', .75, 1.5, .05, value => value.toFixed(2) + '×'),
@@ -1570,6 +1694,7 @@ function soundDialog() {
 $('sound').onclick = soundDialog;
 
 function setSleep(until = 0, afterSong = false) {
+  if (native) { native.command('sleep', {until, afterSong}).catch(error => toast(error.message)); return; }
   cancelTransition();
   sleepUntil = until;
   sleepAfterSong = afterSong;
@@ -1587,6 +1712,7 @@ function scheduleSleepCheck() {
 }
 
 function checkSleep(ended = false) {
+  if (native) return false;
   if ((sleepUntil && Date.now() >= sleepUntil) || (ended && sleepAfterSong)) {
     setSleep();
     pausePlayback();
@@ -1680,7 +1806,7 @@ element.onerror = () => {
   else if (element === fadingOut) finishFade();
 };
 }
-if ('mediaSession' in navigator) {
+if (!native && 'mediaSession' in navigator) {
   for (const [action, callback] of Object.entries({play: () => resumePlayback().catch(() => {}), pause: pausePlayback, nexttrack: () => advance(), previoustrack: previous, seekto: event => seekPlayback(event.seekTime)})) {
     try { navigator.mediaSession.setActionHandler(action, callback); } catch { /* Browser support varies. */ }
   }
@@ -1699,6 +1825,34 @@ function resumeAfterReload() {
   });
 }
 
+if (native) {
+  $('install').hidden = true;
+  window.addEventListener('muso-native-error', event => toast(event.detail));
+  native.onState = state => {
+    const previousCurrent = current, previousQueue = JSON.stringify(queue);
+    const ids = state.ids || [];
+    current = state.current || '';
+    history = ids.slice(0, state.index).filter(trackById);
+    queue = ids.slice(state.index + 1).filter(trackById);
+    repeat = state.repeat || 0;
+    shuffle = Boolean(state.shuffle);
+    sleepUntil = state.sleepUntil || 0;
+    sleepAfterSong = Boolean(state.sleepAfterSong);
+    sound.settings = {...MusoSound.defaults, ...state.sound, crossfade: 0};
+    updatePlaybackModes(); updateSleep(); player();
+    if (dialog.open && $('dialog-title').textContent === 'Play queue' && (current !== previousCurrent || JSON.stringify(queue) !== previousQueue)) queueDialog();
+  };
+  const shared = () => {
+    if (!native.shared) return;
+    const value = native.shared;
+    native.shared = '';
+    addMusic();
+    const input = dialog.querySelector('input[aria-label="Music link"]');
+    if (input) input.value = value;
+  };
+  window.addEventListener('muso-share', shared);
+  if (native.shared) shared();
+}
 const launch = new URLSearchParams(location.search);
 if (launch.has('imports')) view = 'imports';
 else if (launch.has('discover')) view = 'discover';
@@ -1743,7 +1897,7 @@ setInterval(async () => {
 
 let installPrompt;
 const installButton = $('install');
-installButton.hidden = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+installButton.hidden = Boolean(native) || window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();
   installPrompt = event;
@@ -1762,5 +1916,5 @@ installButton.onclick = async () => {
     modal('Install Muso', node('p', 'Open your browser menu and choose Install app or Add to Home screen.'));
   }
 };
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if (!native && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 

@@ -1,0 +1,75 @@
+name: Muso Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/android-offline-apk]
+    paths: ['android-app/**', 'static/**', 'templates/**', 'termux/export-android.py', '*.py', '.github/workflows/android-apk.yml']
+permissions:
+  contents: read
+concurrency:
+  group: muso-android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Configure Android SDK
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+          cache-read-only: false
+      - name: Build and lint APK
+        working-directory: android-app
+        run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Package signing tools
+        run: |
+          mkdir -p signing-tools
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muso-android-apks
+          path: |
+            android-app/app/build/outputs/apk/debug/*.apk
+            android-app/app/build/outputs/apk/release/*.apk
+            android-app/app/build/outputs/apk/androidTest/debug/*.apk
+            signing-tools/apksigner.jar
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Android device tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            cd android-app && gradle :app:connectedDebugAndroidTest --stacktrace
+            mkdir -p android-app/screenshots && adb pull /sdcard/Download/muso-library.png android-app/screenshots/library.png && adb pull /sdcard/Download/muso-now-playing.png android-app/screenshots/now-playing.png
+            adb pull /sdcard/Download/muso-transfer-guide.png android-app/screenshots/transfer-guide.png && adb pull /sdcard/Download/muso-transfer-preview.png android-app/screenshots/transfer-preview.png && adb pull /sdcard/Download/muso-transfer-result.png android-app/screenshots/transfer-result.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: muso-android-test-reports
+          path: |
+            android-app/screenshots/
+            screenshots/
+            android-app/build/reports/
+            android-app/app/build/reports/
+            android-app/app/build/outputs/androidTest-results/
+          retention-days: 14
