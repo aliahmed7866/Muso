@@ -123,11 +123,12 @@ class BackupTests(unittest.TestCase):
             config.write_text('MUSO_SERVICE_DATA_DIR=' + shlex.quote(str(source.root)) + '\n')
             tool = downloads / 'Muso-transfer.py'; tool.write_bytes(Path(__file__).resolve().parents[1].joinpath('backup.py').read_bytes())
             env = {k:v for k,v in os.environ.items() if k not in ('MUSO_DATA_DIR','MUSO_SERVICE_DATA_DIR')}
-            env.update(HOME=str(home), PREFIX=str(prefix))
-            result = subprocess.run([sys.executable, str(tool)], cwd=downloads, env=env, capture_output=True, text=True)
+            env.update(PREFIX=str(prefix))
+            output = downloads / 'Muso-backup-cli.zip'
+            result = subprocess.run([sys.executable, str(tool), str(output)], cwd=downloads, env=env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn('Done: 1 songs', result.stdout)
-            output = next(downloads.glob('Muso-backup-*.zip')); original = output.read_bytes()
+            original = output.read_bytes()
             result = subprocess.run([sys.executable, str(tool), str(output)], env=env, capture_output=True, text=True)
             self.assertNotEqual(0, result.returncode)
             self.assertEqual(original, output.read_bytes())
