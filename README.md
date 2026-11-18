@@ -1,5 +1,7 @@
 # Muso
 
+A standalone Android version is available in [`android-app/`](android-app/README.md), bundling the Muso library with native background audio. See that guide for installation, migration and current Android boundaries.
+
 A free, ad-free music library that runs on your Android phone with Termux. Saved audio plays without internet while Muso is running. Search your library, like songs, make playlists, queue tracks, and use the browser's Android media controls.
 
 ## Install on Termux

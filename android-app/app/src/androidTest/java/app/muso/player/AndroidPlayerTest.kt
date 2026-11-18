@@ -2,6 +2,14 @@ package app.muso.player
 
 import android.content.ComponentName
 import android.os.Bundle
+import android.graphics.Bitmap
+import androidx.test.espresso.web.sugar.Web.onWebView
+import androidx.test.espresso.web.webdriver.DriverAtoms.findElement
+import androidx.test.espresso.web.webdriver.DriverAtoms.getText
+import androidx.test.espresso.web.webdriver.DriverAtoms.webClick
+import androidx.test.espresso.web.webdriver.Locator
+import androidx.test.espresso.web.assertion.WebViewAssertions.webMatches
+import org.hamcrest.Matchers.containsString
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
@@ -19,6 +27,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import kotlin.math.sin
 
+@androidx.media3.common.util.UnstableApi
 @RunWith(AndroidJUnit4::class)
 class AndroidPlayerTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -63,6 +72,16 @@ class AndroidPlayerTest {
         assertTrue(html.contains("Recap"))
         val scenario = ActivityScenario.launch(MainActivity::class.java)
         try {
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.ID, "status")).check(webMatches(getText(), containsString("On this device")))
+                    true
+                } catch (_: Throwable) { false }
+            }
+            instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+                File(context.getExternalFilesDir(null), "library.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bitmap.recycle()
+            }
             val future = main { MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java))).buildAsync() }
             val controller = future.get(30, TimeUnit.SECONDS)
             fun command(request: JSONObject): JSONObject {
@@ -81,6 +100,17 @@ class AndroidPlayerTest {
             scenario.recreate()
             assertEquals(id2, state().getString("current"))
             assertTrue(state().getDouble("position") >= before)
+            waitFor {
+                try {
+                    onWebView().withElement(findElement(Locator.ID, "now-title")).check(webMatches(getText(), containsString("Android second")))
+                    true
+                } catch (_: Throwable) { false }
+            }
+            onWebView().withElement(findElement(Locator.ID, "now")).perform(webClick())
+            instrumentation.uiAutomation.takeScreenshot()?.let { bitmap ->
+                File(context.getExternalFilesDir(null), "now-playing.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bitmap.recycle()
+            }
             command(JSONObject().put("op", "seek").put("seconds", 5))
             waitFor { state().getDouble("position") >= 5 }
             command(JSONObject().put("op", "queue").put("items", items).put("current", id2).put("repeat", 2))

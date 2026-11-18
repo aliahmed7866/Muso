@@ -6,7 +6,7 @@
   const pending = new Map();
   const call = (action, args = {}) => new Promise((resolve, reject) => {
     const id = String(++sequence);
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Muso is taking longer than expected. Please retry.')); }, action === 'import' ? 600000 : 30000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('Muso is taking longer than expected. Please retry.')); }, ['import', 'backup'].includes(action) ? 3600000 : 30000);
     pending.set(id, {resolve, reject, timer});
     window.MusoBridge.postMessage(JSON.stringify({id, action, args}));
   });
@@ -47,9 +47,9 @@
       catch (error) { window.dispatchEvent(new CustomEvent('muso-native-error', {detail: error.message})); }
       finally { polling = false; }
     },
-    sync(current, queue, history, repeat) {
-      if (!current) return;
-      native.command('queue', {current, ids: [...history, current, ...queue], repeat}).catch(error => {
+    sync(current, queue, history, repeat, shuffle) {
+      if (!current && !queue.length) return;
+      native.command('queue', {current, ids: [...history, ...(current ? [current] : []), ...queue], index: history.length, repeat, shuffle}).catch(error => {
         window.dispatchEvent(new CustomEvent('muso-native-error', {detail: error.message}));
       });
     },
@@ -72,7 +72,8 @@
         gain() {}
       }();
     },
-    importAudio: () => call('import')
+    importAudio: () => call('import'),
+    importBackup: () => call('backup')
   };
   setInterval(() => native.onState && native.poll(), 500);
   document.addEventListener('visibilitychange', () => native.onState && native.poll());

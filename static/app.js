@@ -937,6 +937,12 @@ function addMusic() {
   content.append(form('Music link', 'Paste a song link', 'Import link', url => importLink(url)),
     node('small', 'YouTube, Spotify tracks and SoundCloud. Spotify links let you choose a YouTube recording.'),
     label, status);
+  if (native) content.append(button('Import Muso backup', async () => {
+    status.textContent = 'Choose a Muso backup ZIP. Existing songs stay in your library.';
+    const result = await native.importBackup();
+    status.textContent = `${result.saved} imported. ${result.duplicates} already saved. ${result.errors.join(' ')}`;
+    await refresh();
+  }), node('small', 'Bring over your Termux library, playlists, likes and listening history using a Muso portable backup.'));
   modal('Add music', content);
 }
 
@@ -1050,7 +1056,7 @@ function shuffleQueue() {
 }
 
 function savePlayback() {
-  if (native) { native.sync(current, queue, history, repeat); return; }
+  if (native) { native.sync(current, queue, history, repeat, shuffle); return; }
   const position = resumeAt ?? (audio.ended ? 0 : audio.currentTime);
   try {
     localStorage.setItem(playbackKey, JSON.stringify({
@@ -1157,7 +1163,7 @@ function playTrack(id, recordHistory = true, options = {}) {
   if (!track) return;
   if (native) {
     commitTrack(id, recordHistory, options);
-    native.command('load', {current, ids: [...history, current, ...queue], repeat}).catch(error => toast(error.message));
+    native.command('load', {current, ids: [...history, current, ...queue], index: history.length, repeat, shuffle}).catch(error => toast(error.message));
     return;
   }
   cancelTransition();
@@ -1729,6 +1735,7 @@ if (native) {
     history = ids.slice(0, state.index).filter(trackById);
     queue = ids.slice(state.index + 1).filter(trackById);
     repeat = state.repeat || 0;
+    shuffle = Boolean(state.shuffle);
     sleepUntil = state.sleepUntil || 0;
     sleepAfterSong = Boolean(state.sleepAfterSong);
     sound.settings = {...MusoSound.defaults, ...state.sound, crossfade: 0};

@@ -34,6 +34,7 @@ class PlaybackService : MediaSessionService() {
     private val handler = Handler(Looper.getMainLooper())
     private var equalizer: Equalizer? = null
     private var sound = JSONObject()
+    private var shuffled = false
     private var sleepUntil = 0L
     private var sleepAfterSong = false
     private var errorMessage = ""
@@ -135,18 +136,25 @@ class PlaybackService : MediaSessionService() {
             "state" -> return
             "load" -> {
                 val items = parseItems(request.getJSONArray("items"))
-                val index = items.indexOfFirst { it.mediaId == request.optString("current") }
+                val index = request.optInt("index", 0).takeIf { it in items.indices && items[it].mediaId == request.optString("current") }
+                    ?: items.indexOfLast { it.mediaId == request.optString("current") }
                 require(index >= 0) { "Song unavailable" }
                 counted = false; playedMs = 0; lastPosition = 0; errorMessage = ""
                 player.setMediaItems(items, index, 0)
+                shuffled = request.optBoolean("shuffle")
                 setRepeat(request.optInt("repeat"))
                 player.prepare(); player.play()
             }
             "queue" -> {
                 // A delayed UI update must never undo a native background transition.
-                if (player.currentMediaItem?.mediaId != request.optString("current")) return
+                val requested = request.optString("current")
+                if ((player.currentMediaItem?.mediaId ?: "") != requested) return
                 val items = parseItems(request.getJSONArray("items"))
-                val index = items.indexOfFirst { it.mediaId == player.currentMediaItem?.mediaId }
+                if (requested.isEmpty() && items.isNotEmpty()) {
+                    player.setMediaItems(items, 0, 0); player.prepare()
+                }
+                val index = request.optInt("index", 0).takeIf { it in items.indices && items[it].mediaId == player.currentMediaItem?.mediaId }
+                    ?: items.indexOfLast { it.mediaId == player.currentMediaItem?.mediaId }
                 if (index >= 0) {
                     val ids = items.map { it.mediaId }
                     val existing = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
@@ -159,6 +167,7 @@ class PlaybackService : MediaSessionService() {
                         player.addMediaItems(items.drop(index + 1))
                     }
                 }
+                shuffled = request.optBoolean("shuffle")
                 setRepeat(request.optInt("repeat"))
             }
             "play" -> {
@@ -208,7 +217,7 @@ class PlaybackService : MediaSessionService() {
         val all = JSONArray()
         for (i in 0 until player.mediaItemCount) all.put(player.getMediaItemAt(i).mediaId)
         return JSONObject().put("ids", all).put("index", player.currentMediaItemIndex.coerceAtLeast(0))
-            .put("current", player.currentMediaItem?.mediaId ?: "")
+            .put("shuffle", shuffled).put("current", player.currentMediaItem?.mediaId ?: "")
             .put("position", player.currentPosition.coerceAtLeast(0) / 1000.0)
             .put("duration", if (player.duration > 0) player.duration / 1000.0 else 0)
             .put("playing", player.playWhenReady && player.playbackState != Player.STATE_ENDED && player.playbackState != Player.STATE_IDLE)
@@ -239,6 +248,7 @@ class PlaybackService : MediaSessionService() {
                 player.setMediaItems(items, index, (saved.optDouble("position", 0.0) * 1000).toLong().coerceAtLeast(0))
                 player.prepare() // Never autoplay after process death or a force stop.
             }
+            shuffled = saved.optBoolean("shuffle")
             counted = saved.optBoolean("counted")
             setRepeat(saved.optInt("repeat"))
             sleepUntil = saved.optLong("sleepUntil").takeIf { it > System.currentTimeMillis() } ?: 0

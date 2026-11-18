@@ -4,7 +4,7 @@ plugins {
     id("com.chaquo.python")
 }
 val prepareCore by tasks.registering(Sync::class) {
-    from("../..") { include("app.py", "importer.py", "discovery.py") }
+    from("../..") { include("app.py", "importer.py", "discovery.py", "backup.py") }
     into(layout.buildDirectory.dir("generated/python"))
 }
 val prepareWeb by tasks.registering(Sync::class) {

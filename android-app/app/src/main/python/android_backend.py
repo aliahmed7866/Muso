@@ -107,3 +107,14 @@ def import_file(path, filename):
         return json.dumps(dict(id=track_id, duplicate=result.get('duplicate', False)))
     finally:
         path.unlink(missing_ok=True)
+
+
+def import_backup(path):
+    from backup import import_library
+    path = Path(path)
+    if path.parent.resolve() != _store.temp.resolve():
+        raise ValueError('Invalid backup location')
+    try:
+        return json.dumps(import_library(_store, path))
+    finally:
+        path.unlink(missing_ok=True)

@@ -58,12 +58,16 @@ jobs:
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          script: cd android-app && gradle :app:connectedDebugAndroidTest --stacktrace
+          script: |
+            cd android-app && gradle :app:connectedDebugAndroidTest --stacktrace
+            mkdir -p screenshots && adb pull /sdcard/Android/data/app.muso.player/files/. screenshots/ || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: muso-android-test-reports
           path: |
+            android-app/screenshots/
+            screenshots/
             android-app/build/reports/
             android-app/app/build/reports/
             android-app/app/build/outputs/androidTest-results/

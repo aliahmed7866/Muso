@@ -30,6 +30,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.UUID
 
+@androidx.media3.common.util.UnstableApi
 class MainActivity : ComponentActivity() {
     companion object { const val ORIGIN = "https://muso.android.localhost" }
     private lateinit var web: WebView
@@ -37,12 +38,14 @@ class MainActivity : ComponentActivity() {
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var importReply: String? = null
+    private var importingBackup = false
     private var destroyed = false
     private var pageReady = false
     private var sharedText: String? = null
     private val pickAudio = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         val id = importReply ?: return@registerForActivityResult
         importReply = null
+        val backup = importingBackup
         EmbeddedEngine.io.execute {
             try {
                 val backend = EmbeddedEngine.start(this).get()
@@ -55,7 +58,7 @@ class MainActivity : ComponentActivity() {
                             if (it.moveToFirst()) it.getString(0) else null
                         } ?: "audio"
                         val ext = name.substringAfterLast('.', "").lowercase()
-                        require(ext in setOf("mp3", "m4a", "flac", "wav", "ogg", "opus", "aac")) { "Unsupported audio: $name" }
+                        require(if (backup) ext == "zip" else ext in setOf("mp3", "m4a", "flac", "wav", "ogg", "opus", "aac")) { "Unsupported audio: $name" }
                         val folder = File(filesDir, "library/imports").apply { mkdirs() }
                         file = File(folder, "${UUID.randomUUID()}.$ext")
                         contentResolver.openInputStream(uri)?.use { input ->
@@ -65,11 +68,18 @@ class MainActivity : ComponentActivity() {
                                     val count = input.read(buffer)
                                     if (count < 0) break
                                     total += count
-                                    require(total <= 512L * 1024 * 1024) { "Audio files must be under 512 MB" }
+                                    require(total <= (if (backup) 10L * 1024 * 1024 * 1024 else 512L * 1024 * 1024)) { "Selected file is too large" }
                                     output.write(buffer, 0, count)
                                 }
                             }
                         } ?: error("Could not open $name")
+                        if (backup) {
+                            val result = JSONObject(backend.callAttr("import_backup", file.absolutePath).toString())
+                            saved += result.getInt("saved"); duplicates += result.getInt("duplicates")
+                            val issues = result.getJSONArray("errors")
+                            for (i in 0 until issues.length()) errors.put(issues.getString(i))
+                            continue
+                        }
                         val result = JSONObject(backend.callAttr("import_file", file.absolutePath, name).toString())
                         if (result.optBoolean("duplicate")) duplicates++ else saved++
                     } catch (error: Exception) { errors.put(error.message ?: "Could not import audio") }
@@ -185,10 +195,11 @@ class MainActivity : ComponentActivity() {
         if (!id.matches(Regex("[0-9]{1,12}"))) return
         val action = request.optString("action")
         val args = request.optJSONObject("args") ?: JSONObject()
-        if (action == "import") {
+        if (action == "import" || action == "backup") {
             if (importReply != null) { fail(id, IllegalStateException("An import is already open")); return }
             importReply = id
-            pickAudio.launch(arrayOf("audio/*", "application/ogg"))
+            importingBackup = action == "backup"
+            pickAudio.launch(if (importingBackup) arrayOf("application/zip", "application/x-zip-compressed") else arrayOf("audio/*", "application/ogg"))
             return
         }
         val executor = if (action == "playback") EmbeddedEngine.commands else EmbeddedEngine.io
