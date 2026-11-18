@@ -1,239 +1,244 @@
 package app.muso.player
 
-import android.Manifest
-import android.content.ContentUris
-import android.content.Context
-import android.content.pm.PackageManager
-import android.database.Cursor
+import android.annotation.SuppressLint
+import android.app.AlertDialog
+import android.content.ComponentName
+import android.content.Intent
 import android.graphics.Color
-import android.os.Build
+import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
-import android.view.Gravity
+import android.provider.OpenableColumns
 import android.view.View
-import android.widget.*
+import android.webkit.*
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
-import androidx.media3.common.Player
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.google.common.util.concurrent.ListenableFuture
-import android.content.ComponentName
-
-data class Song(val id: Long, val title: String, val artist: String, val uri: android.net.Uri)
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
-    private var controllerFuture: ListenableFuture<MediaController>? = null
+    companion object { const val ORIGIN = "https://muso.android.localhost" }
+    private lateinit var web: WebView
+    private lateinit var root: LinearLayout
     private var controller: MediaController? = null
-    private val songs = mutableListOf<Song>()
-    private lateinit var list: LinearLayout
-    private lateinit var status: TextView
-    private lateinit var nowPlaying: TextView
-    private lateinit var playButton: Button
-    private lateinit var shuffleButton: Button
-    private lateinit var repeatButton: Button
-    private lateinit var seekBar: SeekBar
-    private lateinit var progressLabel: TextView
-    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val progressUpdater = object : Runnable {
-        override fun run() { updateProgress(); handler.postDelayed(this, 1000) }
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var importReply: String? = null
+    private var destroyed = false
+    private var pageReady = false
+    private var sharedText: String? = null
+    private val pickAudio = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val id = importReply ?: return@registerForActivityResult
+        importReply = null
+        EmbeddedEngine.io.execute {
+            try {
+                val backend = EmbeddedEngine.start(this).get()
+                var saved = 0; var duplicates = 0
+                val errors = JSONArray()
+                for (uri in uris) {
+                    var file: File? = null
+                    try {
+                        val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                            if (it.moveToFirst()) it.getString(0) else null
+                        } ?: "audio"
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        require(ext in setOf("mp3", "m4a", "flac", "wav", "ogg", "opus", "aac")) { "Unsupported audio: $name" }
+                        val folder = File(filesDir, "library/imports").apply { mkdirs() }
+                        file = File(folder, "${UUID.randomUUID()}.$ext")
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            file.outputStream().use { output ->
+                                val buffer = ByteArray(65536); var total = 0L
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    total += count
+                                    require(total <= 512L * 1024 * 1024) { "Audio files must be under 512 MB" }
+                                    output.write(buffer, 0, count)
+                                }
+                            }
+                        } ?: error("Could not open $name")
+                        val result = JSONObject(backend.callAttr("import_file", file.absolutePath, name).toString())
+                        if (result.optBoolean("duplicate")) duplicates++ else saved++
+                    } catch (error: Exception) { errors.put(error.message ?: "Could not import audio") }
+                    finally { file?.delete() }
+                }
+                reply(id, JSONObject().put("saved", saved).put("duplicates", duplicates).put("errors", errors))
+            } catch (error: Exception) { fail(id, error) }
+        }
     }
-    private var searched = ""
 
-    private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) refreshSongs() else status.text = "Audio access denied. Grant music permission in Android Settings."
-    }
-
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = Color.rgb(15, 17, 22)
-        window.navigationBarColor = Color.rgb(15, 17, 22)
-        buildUi()
-        val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
-        val future = MediaController.Builder(this, token).buildAsync()
-        controllerFuture = future
-        future.addListener({
-            try {
-                controller = future.get()
-                controller?.addListener(object : Player.Listener {
-                    override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) = updateNowPlaying()
-                    override fun onIsPlayingChanged(isPlaying: Boolean) = updateNowPlaying()
-                })
-                updateNowPlaying()
-                handler.post(progressUpdater)
-            } catch (_: Exception) { status.text = "Unable to connect to audio playback." }
-        }, ContextCompat.getMainExecutor(this))
-        requestAudioPermission()
-    }
-
-    private fun buildUi() {
-        val bg = Color.rgb(19, 21, 26)
-        val fg = Color.rgb(247, 246, 249)
-        val panel = Color.rgb(36, 39, 46)
-        val accent = Color.rgb(213, 249, 125)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(18, 30, 18, 16); setBackgroundColor(bg) }
-        val title = TextView(this).apply { text = "≋  Muso"; textSize = 30f; setTextColor(accent); setPadding(0, 0, 0, 16) }
-        root.addView(title)
-        val search = EditText(this).apply { hint = "Search your songs"; setSingleLine(); setTextColor(fg); setHintTextColor(Color.LTGRAY); setBackgroundColor(panel); setPadding(16, 10, 16, 10) }
-        root.addView(search)
-        status = TextView(this).apply { text = "Loading your phone's music…"; setTextColor(Color.LTGRAY); setPadding(0, 18, 0, 10) }
-        root.addView(status)
-        val refreshButton = Button(this).apply { text = "Rescan phone music"; setOnClickListener { requestAudioPermission() } }
-        root.addView(refreshButton)
-        val scroll = ScrollView(this)
-        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        scroll.addView(list)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        nowPlaying = TextView(this).apply { text = "Choose a song"; setTextColor(fg); textSize = 16f; setPadding(6, 20, 6, 10) }
-        root.addView(nowPlaying)
-        progressLabel = TextView(this).apply { text = "0:00 / 0:00"; setTextColor(Color.LTGRAY) }
-        root.addView(progressLabel)
-        seekBar = SeekBar(this).apply {
-            max = 1000
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onStartTrackingTouch(bar: SeekBar?) {}
-                override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {}
-                override fun onStopTrackingTouch(bar: SeekBar?) {
-                    val p = controller ?: return
-                    if (p.duration > 0 && p.duration != androidx.media3.common.C.TIME_UNSET) {
-                        p.seekTo(p.duration * progress.toLong() / 1000)
-                    }
-                }
-            })
-        }
-        root.addView(seekBar)
-        val controls = LinearLayout(this).apply { gravity = Gravity.CENTER }
-        fun control(label: String, action: () -> Unit) = Button(this).apply { text = label; setOnClickListener { action() } }.also {
-            controls.addView(it, LinearLayout.LayoutParams(0, -2, 1f))
-        }
-        control("Previous") { controller?.seekToPreviousMediaItem() }
-        playButton = control("Play") { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
-        control("Next") { controller?.seekToNextMediaItem() }
-        root.addView(controls)
-        val options = LinearLayout(this).apply { gravity = Gravity.CENTER }
-        shuffleButton = Button(this).apply {
-            text = "Shuffle off"
-            setOnClickListener {
-                controller?.let { player ->
-                    player.shuffleModeEnabled = !player.shuffleModeEnabled
-                    updateNowPlaying()
-                }
-            }
-        }
-        repeatButton = Button(this).apply {
-            text = "Repeat off"
-            setOnClickListener {
-                controller?.let { player ->
-                    player.repeatMode = when (player.repeatMode) {
-                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                        else -> Player.REPEAT_MODE_OFF
-                    }
-                    updateNowPlaying()
-                }
-            }
-        }
-        options.addView(shuffleButton, LinearLayout.LayoutParams(0, -2, 1f))
-        options.addView(repeatButton, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(options)
+        window.statusBarColor = Color.rgb(16, 18, 24)
+        window.navigationBarColor = Color.rgb(16, 18, 24)
+        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(16, 18, 24)) }
         setContentView(root)
-        search.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { searched = s.toString(); showSongs() }
-            override fun afterTextChanged(s: android.text.Editable?) {}
-        })
-    }
-
-    private fun requestAudioPermission() {
-        val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
-        if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) refreshSongs()
-        else permissionRequest.launch(permission)
-    }
-
-    private fun refreshSongs() {
-        songs.clear()
-        val columns = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST)
-        val order = "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC"
-        try {
-            contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, columns,
-                "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, order)?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    songs.add(Song(id, cursor.getString(titleCol) ?: "Untitled",
-                        cursor.getString(artistCol) ?: "Unknown artist",
-                        ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)))
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
+        val loading = TextView(this).apply {
+            text = "Muso\nGetting your music ready…"; textSize = 24f
+            setTextColor(Color.WHITE); setPadding(32, 64, 32, 32)
+        }
+        root.addView(loading)
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            loading.text = "Update Android System WebView in Google Play, then reopen Muso."
+            return
+        }
+        web = WebView(this).apply {
+            setBackgroundColor(Color.rgb(16, 18, 24))
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            settings.setSupportMultipleWindows(false)
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+        WebViewCompat.addWebMessageListener(web, "MusoBridge", setOf(ORIGIN)) { _, message, origin, main, _ ->
+            if (main && origin.toString() == ORIGIN) handleMessage(message.data ?: "")
+        }
+        web.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
+                if (request.url.scheme != "https" || request.url.host != "muso.android.localhost" || request.url.port != -1 || request.method != "GET") return blocked()
+                return try {
+                    val asset = EmbeddedEngine.start(this@MainActivity).get().callAttr("asset", request.url.path ?: "/").asList()
+                    WebResourceResponse(asset[0].toString(), "UTF-8", 200, "OK", mapOf(
+                        "Content-Security-Policy" to "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'none'; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'self'",
+                        "Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"
+                    ), ByteArrayInputStream(asset[1].toJava(ByteArray::class.java)))
+                } catch (_: Exception) { blocked() }
+            }
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (request.url.toString().startsWith("$ORIGIN/") && request.url.host == "muso.android.localhost") return false
+                if (request.isForMainFrame && request.url.scheme in setOf("https", "http")) {
+                    try { startActivity(Intent(Intent.ACTION_VIEW, request.url)) } catch (_: Exception) { }
+                }
+                return true
+            }
+            override fun onPageFinished(view: WebView, url: String) {
+                pageReady = url == "$ORIGIN/"
+                deliverShare()
+            }
+        }
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                AlertDialog.Builder(this@MainActivity).setMessage(message)
+                    .setPositiveButton("Confirm") { _, _ -> result.confirm() }
+                    .setNegativeButton("Cancel") { _, _ -> result.cancel() }
+                    .setOnCancelListener { result.cancel() }.show()
+                return true
+            }
+        }
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                web.evaluateJavascript("Boolean(document.querySelector('dialog[open]'))") { open ->
+                    if (open == "true") web.evaluateJavascript("document.querySelector('dialog[open]').close()", null)
+                    else moveTaskToBack(true)
                 }
             }
-            status.text = "${songs.size} songs on this device · offline playback"
-            showSongs()
-        } catch (error: Exception) { status.text = "Could not read audio files: ${error.message}" }
-    }
-
-    private fun showSongs() {
-        list.removeAllViews()
-        val matching = songs.filter { searched.isBlank() || it.title.contains(searched, true) || it.artist.contains(searched, true) }
-        for (song in matching) {
-            val row = TextView(this).apply {
-                text = "${song.title}\n${song.artist}"
-                textSize = 16f
-                setTextColor(Color.WHITE)
-                setPadding(16, 16, 12, 16)
-                setOnClickListener { playSong(song) }
-            }
-            list.addView(row, LinearLayout.LayoutParams(-1, -2))
-            val line = View(this).apply { setBackgroundColor(Color.rgb(50, 53, 60)) }
-            list.addView(line, LinearLayout.LayoutParams(-1, 1))
-        }
-        if (matching.isEmpty()) list.addView(TextView(this).apply {
-            text = if (songs.isEmpty()) "No music found. Add audio files to your phone and reopen Muso." else "No matches."
-            setTextColor(Color.LTGRAY); setPadding(14, 20, 14, 20)
         })
-    }
-
-    private fun playSong(song: Song) {
-        val player = controller ?: run { status.text = "Audio player is initializing. Try again."; return }
-        val items = songs.map {
-            MediaItem.Builder().setUri(it.uri).setMediaId(it.id.toString())
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(it.title).setArtist(it.artist).build()).build()
-        }
-        val index = songs.indexOf(song)
-        player.setMediaItems(items, index, 0)
-        player.prepare()
-        player.play()
-        updateNowPlaying()
-    }
-
-    private fun updateNowPlaying() {
-        val player = controller
-        nowPlaying.text = if (player?.currentMediaItem == null) "Choose a song"
-            else "${player.mediaMetadata.title ?: "Untitled"} · ${player.mediaMetadata.artist ?: "Unknown artist"}"
-        playButton.text = if (player?.isPlaying == true) "Pause" else "Play"
-        shuffleButton.text = if (player?.shuffleModeEnabled == true) "Shuffle on" else "Shuffle off"
-        repeatButton.text = when (player?.repeatMode) {
-            Player.REPEAT_MODE_ALL -> "Repeat all"
-            Player.REPEAT_MODE_ONE -> "Repeat one"
-            else -> "Repeat off"
+        readShare(intent)
+        EmbeddedEngine.io.execute {
+            try {
+                EmbeddedEngine.start(this).get()
+                runOnUiThread {
+                    if (destroyed) return@runOnUiThread
+                    val future = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java))).buildAsync()
+                    controllerFuture = future
+                    future.addListener({
+                        try {
+                            controller = future.get()
+                            root.removeAllViews()
+                            root.addView(web, LinearLayout.LayoutParams(-1, -1))
+                            web.loadUrl("$ORIGIN/")
+                        } catch (error: Exception) { loading.text = "Could not start Muso. Close and reopen the app.\n${error.message}" }
+                    }, ContextCompat.getMainExecutor(this))
+                }
+            } catch (error: Exception) { runOnUiThread { loading.text = "Could not start Muso.\n${error.message}" } }
         }
     }
 
-    private fun updateProgress() {
-        val p = controller ?: return
-        val duration = p.duration.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET } ?: 0L
-        val position = p.currentPosition.coerceAtLeast(0L)
-        seekBar.progress = if (duration > 0) (position.coerceAtMost(duration) * 1000 / duration).toInt() else 0
-        fun clock(ms: Long) = "${ms / 60000}:${((ms / 1000) % 60).toString().padStart(2, '0')}"
-        progressLabel.text = "${clock(position)} / ${clock(duration)}"
-    }
+    private fun blocked() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(ByteArray(0)))
 
+    private fun handleMessage(raw: String) {
+        if (raw.length > 1_000_000) return
+        val request = try { JSONObject(raw) } catch (_: Exception) { return }
+        val id = request.optString("id")
+        if (!id.matches(Regex("[0-9]{1,12}"))) return
+        val action = request.optString("action")
+        val args = request.optJSONObject("args") ?: JSONObject()
+        if (action == "import") {
+            if (importReply != null) { fail(id, IllegalStateException("An import is already open")); return }
+            importReply = id
+            pickAudio.launch(arrayOf("audio/*", "application/ogg"))
+            return
+        }
+        val executor = if (action == "playback") EmbeddedEngine.commands else EmbeddedEngine.io
+        executor.execute {
+            try {
+                val backend = EmbeddedEngine.start(this).get()
+                when (action) {
+                    "api" -> reply(id, JSONObject(backend.callAttr("api", "/api/" + args.getString("path"), args.getString("method"), args.opt("body")?.takeUnless { it == JSONObject.NULL }?.toString() ?: "").toString()))
+                    "playback" -> {
+                        if (args.optString("op") in setOf("load", "queue")) {
+                            args.put("items", JSONArray(backend.callAttr("items", args.getJSONArray("ids").toString()).toString()))
+                        }
+                        runOnUiThread {
+                            val player = controller
+                            if (player == null) { fail(id, IllegalStateException("Player is starting")); return@runOnUiThread }
+                            val result = player.sendCustomCommand(SessionCommand(PlaybackService.COMMAND, Bundle.EMPTY), Bundle().apply { putString("json", args.toString()) })
+                            result.addListener({
+                                try {
+                                    val response = result.get()
+                                    if (response.resultCode != 0) error("Playback command failed")
+                                    reply(id, JSONObject(response.extras.getString("json") ?: "{}"))
+                                } catch (error: Exception) { fail(id, error) }
+                            }, ContextCompat.getMainExecutor(this))
+                        }
+                    }
+                    else -> error("Unknown app action")
+                }
+            } catch (error: Exception) { fail(id, error) }
+        }
+    }
+    private fun reply(id: String, result: JSONObject) = runOnUiThread {
+        if (!destroyed) web.evaluateJavascript("window.MusoAndroid?.resolve($id,${result},null)", null)
+    }
+    private fun fail(id: String, error: Exception) = runOnUiThread {
+        if (!destroyed) web.evaluateJavascript("window.MusoAndroid?.resolve($id,null,${JSONObject.quote(error.message ?: "Muso could not complete this action")})", null)
+    }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); readShare(intent); deliverShare() }
+    private fun readShare(intent: Intent) {
+        if (intent.action == Intent.ACTION_SEND && intent.type == "text/plain") sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.take(4000)
+    }
+    private fun deliverShare() {
+        val text = sharedText ?: return
+        if (!pageReady) return
+        web.evaluateJavascript("window.MusoAndroid.shared = ${JSONObject.quote(text)}; window.dispatchEvent(new Event('muso-share'))", null)
+        sharedText = null
+    }
     override fun onDestroy() {
-        handler.removeCallbacks(progressUpdater)
+        destroyed = true
         controllerFuture?.let { MediaController.releaseFuture(it) }
+        if (::web.isInitialized) { root.removeView(web); web.destroy() }
         super.onDestroy()
     }
 }

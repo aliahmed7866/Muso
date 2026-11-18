@@ -1,8 +1,9 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let audio = $('audio');
-const audioDecks = [audio, $('audio-next')];
-const sound = new MusoSound(audioDecks);
+const native = window.MusoAndroid;
+let audio = native ? native.audio : $('audio');
+const audioDecks = native ? [] : [audio, $('audio-next')];
+const sound = native ? native.createSound(MusoSound) : new MusoSound(audioDecks);
 let fadeRequest = null, fadingOut = null, fadeTimer = null, playbackGeneration = 0, failedFade = '';
 const dialog = $('dialog');
 const token = document.querySelector('meta[name=muso-token]').content;
@@ -85,6 +86,7 @@ function button(text, action, cls, label) {
 }
 
 async function api(path, method = 'GET', data) {
+  if (native) return native.api(path, method, data);
   const headers = {'X-Muso-Token': token};
   if (data && !(data instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
@@ -220,10 +222,9 @@ function initializeLibrary() {
   if (libraryReady) return Promise.resolve();
   if (!initializing) {
     $('status').textContent = 'Connecting to Muso…';
-    initializing = refresh().then(() => {
-      restorePlayback();
-      restoreSleep();
-      resumeAfterReload();
+    initializing = refresh().then(async () => {
+      if (native) await native.command('state');
+      else { restorePlayback(); restoreSleep(); resumeAfterReload(); }
       libraryReady = true;
       $('status').textContent = '● On this device';
     }).catch(error => {
@@ -924,7 +925,14 @@ function addMusic() {
     status.textContent = saved + ' imported. ' + (skipped ? skipped + ' already in your library. ' : '') + failures.join(' ');
     try { await refresh(); } catch (error) { toast(error.message); }
   };
-  label.append(upload);
+  if (native) {
+    label.replaceChildren(button('Choose audio files', async () => {
+      status.textContent = 'Choose files from your phone…';
+      const result = await native.importAudio();
+      status.textContent = `${result.saved} imported. ${result.duplicates} already saved. ${result.errors.join(' ')}`;
+      await refresh();
+    }, 'primary'));
+  } else label.append(upload);
   const content = node('div', undefined, 'stack');
   content.append(form('Music link', 'Paste a song link', 'Import link', url => importLink(url)),
     node('small', 'YouTube, Spotify tracks and SoundCloud. Spotify links let you choose a YouTube recording.'),
@@ -1042,6 +1050,7 @@ function shuffleQueue() {
 }
 
 function savePlayback() {
+  if (native) { native.sync(current, queue, history, repeat); return; }
   const position = resumeAt ?? (audio.ended ? 0 : audio.currentTime);
   try {
     localStorage.setItem(playbackKey, JSON.stringify({
@@ -1099,6 +1108,7 @@ function finishFade() {
 }
 
 function resumePlayback() {
+  if (native) return native.command('play');
   const element = audio, generation = playbackGeneration;
   if (!sound.context && !sound.settings.enabled) return element.play();
   return sound.activate().then(() => {
@@ -1107,11 +1117,13 @@ function resumePlayback() {
 }
 
 function pausePlayback() {
+  if (native) { native.command('pause').catch(error => toast(error.message)); return; }
   cancelTransition();
   audio.pause();
 }
 
 function seekPlayback(seconds) {
+  if (native) { native.command('seek', {seconds}).catch(error => toast(error.message)); return; }
   if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
   cancelTransition();
   failedFade = '';
@@ -1135,7 +1147,7 @@ function commitTrack(id, recordHistory, options = {}) {
   lastAudioTime = 0;
   resumeAt = null;
   failedFade = '';
-  savePlayback();
+  if (!native) savePlayback();
   player();
   if (dialog.open && $('dialog-title').textContent === 'Play queue') queueDialog();
 }
@@ -1143,6 +1155,11 @@ function commitTrack(id, recordHistory, options = {}) {
 function playTrack(id, recordHistory = true, options = {}) {
   const track = trackById(id);
   if (!track) return;
+  if (native) {
+    commitTrack(id, recordHistory, options);
+    native.command('load', {current, ids: [...history, current, ...queue], repeat}).catch(error => toast(error.message));
+    return;
+  }
   cancelTransition();
   if (!options.noFade && sound.canFade && current && current !== id && !audio.paused && audio.readyState >= 2) {
     crossfadeTo(id, recordHistory, options);
@@ -1243,6 +1260,7 @@ function advance(ended = false) {
 }
 
 function previous() {
+  if (native) { native.command('previous').catch(error => toast(error.message)); return; }
   if (audio.currentTime > 3 || !history.length) {
     if (current) seekPlayback(0);
     return;
@@ -1276,7 +1294,7 @@ function player() {
   for (const row of document.querySelectorAll('.track[data-track-id]')) {
     row.classList.toggle('playing', row.dataset.trackId === current);
   }
-  if ('mediaSession' in navigator && track) {
+  if (!native && 'mediaSession' in navigator && track) {
     navigator.mediaSession.metadata = new MediaMetadata({title: track.title, artist: track.artist, album: track.album});
     navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
   }
@@ -1486,8 +1504,8 @@ function updateSleep() {
 
 function soundDialog() {
   const content = node('div', undefined, 'sound-panel');
-  const intro = node('p', 'Shape your sound and let songs flow into each other. These settings affect playback on this browser only.', 'muted sound-intro');
-  const toggle = button(sound.settings.enabled ? 'EQ & crossfade on' : 'Enable EQ & crossfade', async () => {
+  const intro = node('p', native ? 'Sound settings apply to native playback, including while the screen is off. Equalizer support depends on your device.' : 'Shape your sound and let songs flow into each other. These settings affect playback on this browser only.', 'muted sound-intro');
+  const toggle = button(sound.settings.enabled ? (native ? 'Equalizer on' : 'EQ & crossfade on') : (native ? 'Enable equalizer' : 'Enable EQ & crossfade'), async () => {
     toggle.disabled = true;
     const enabled = !sound.settings.enabled;
     cancelTransition();
@@ -1553,6 +1571,7 @@ function soundDialog() {
   const transition = node('div', undefined, 'sound-section');
   transition.append(node('h3', 'Smooth transitions'), slider('crossfade', 'Crossfade', 0, 10, 1, value => value ? value + ' seconds' : 'Off', !sound.settings.enabled),
     node('p', 'Overlap the end of a song with the start of the next. Manual skips use a shorter fade. Loop-song and “After this song” keep the full ending.', 'muted'));
+  if (native) transition.replaceChildren(node('p', 'Native playback uses gapless transitions where the audio files support them. Crossfade is not included in this Android build.', 'muted'));
   const levels = node('div', undefined, 'sound-section');
   levels.append(slider('volume', 'Volume', 0, 100, 1, value => value + '%'),
     slider('speed', 'Playback speed', .75, 1.5, .05, value => value.toFixed(2) + '×'),
@@ -1570,6 +1589,7 @@ function soundDialog() {
 $('sound').onclick = soundDialog;
 
 function setSleep(until = 0, afterSong = false) {
+  if (native) { native.command('sleep', {until, afterSong}).catch(error => toast(error.message)); return; }
   cancelTransition();
   sleepUntil = until;
   sleepAfterSong = afterSong;
@@ -1587,6 +1607,7 @@ function scheduleSleepCheck() {
 }
 
 function checkSleep(ended = false) {
+  if (native) return false;
   if ((sleepUntil && Date.now() >= sleepUntil) || (ended && sleepAfterSong)) {
     setSleep();
     pausePlayback();
@@ -1680,7 +1701,7 @@ element.onerror = () => {
   else if (element === fadingOut) finishFade();
 };
 }
-if ('mediaSession' in navigator) {
+if (!native && 'mediaSession' in navigator) {
   for (const [action, callback] of Object.entries({play: () => resumePlayback().catch(() => {}), pause: pausePlayback, nexttrack: () => advance(), previoustrack: previous, seekto: event => seekPlayback(event.seekTime)})) {
     try { navigator.mediaSession.setActionHandler(action, callback); } catch { /* Browser support varies. */ }
   }
@@ -1699,6 +1720,31 @@ function resumeAfterReload() {
   });
 }
 
+if (native) {
+  $('install').hidden = true;
+  window.addEventListener('muso-native-error', event => toast(event.detail));
+  native.onState = state => {
+    const ids = state.ids || [];
+    current = state.current || '';
+    history = ids.slice(0, state.index).filter(trackById);
+    queue = ids.slice(state.index + 1).filter(trackById);
+    repeat = state.repeat || 0;
+    sleepUntil = state.sleepUntil || 0;
+    sleepAfterSong = Boolean(state.sleepAfterSong);
+    sound.settings = {...MusoSound.defaults, ...state.sound, crossfade: 0};
+    updatePlaybackModes(); updateSleep(); player();
+  };
+  const shared = () => {
+    if (!native.shared) return;
+    const value = native.shared;
+    native.shared = '';
+    addMusic();
+    const input = dialog.querySelector('input[aria-label="Music link"]');
+    if (input) input.value = value;
+  };
+  window.addEventListener('muso-share', shared);
+  if (native.shared) shared();
+}
 const launch = new URLSearchParams(location.search);
 if (launch.has('imports')) view = 'imports';
 else if (launch.has('discover')) view = 'discover';
@@ -1743,7 +1789,7 @@ setInterval(async () => {
 
 let installPrompt;
 const installButton = $('install');
-installButton.hidden = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+installButton.hidden = Boolean(native) || window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();
   installPrompt = event;
@@ -1762,5 +1808,5 @@ installButton.onclick = async () => {
     modal('Install Muso', node('p', 'Open your browser menu and choose Install app or Add to Home screen.'));
   }
 };
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if (!native && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
