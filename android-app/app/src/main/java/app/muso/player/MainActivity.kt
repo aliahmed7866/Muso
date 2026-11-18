@@ -33,6 +33,14 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var nowPlaying: TextView
     private lateinit var playButton: Button
+    private lateinit var shuffleButton: Button
+    private lateinit var repeatButton: Button
+    private lateinit var seekBar: SeekBar
+    private lateinit var progressLabel: TextView
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val progressUpdater = object : Runnable {
+        override fun run() { updateProgress(); handler.postDelayed(this, 1000) }
+    }
     private var searched = ""
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -55,6 +63,7 @@ class MainActivity : ComponentActivity() {
                     override fun onIsPlayingChanged(isPlaying: Boolean) = updateNowPlaying()
                 })
                 updateNowPlaying()
+                handler.post(progressUpdater)
             } catch (_: Exception) { status.text = "Unable to connect to audio playback." }
         }, ContextCompat.getMainExecutor(this))
         requestAudioPermission()
@@ -72,12 +81,30 @@ class MainActivity : ComponentActivity() {
         root.addView(search)
         status = TextView(this).apply { text = "Loading your phone's music…"; setTextColor(Color.LTGRAY); setPadding(0, 18, 0, 10) }
         root.addView(status)
+        val refreshButton = Button(this).apply { text = "Rescan phone music"; setOnClickListener { requestAudioPermission() } }
+        root.addView(refreshButton)
         val scroll = ScrollView(this)
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(list)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         nowPlaying = TextView(this).apply { text = "Choose a song"; setTextColor(fg); textSize = 16f; setPadding(6, 20, 6, 10) }
         root.addView(nowPlaying)
+        progressLabel = TextView(this).apply { text = "0:00 / 0:00"; setTextColor(Color.LTGRAY) }
+        root.addView(progressLabel)
+        seekBar = SeekBar(this).apply {
+            max = 1000
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onStartTrackingTouch(bar: SeekBar?) {}
+                override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {}
+                override fun onStopTrackingTouch(bar: SeekBar?) {
+                    val p = controller ?: return
+                    if (p.duration > 0 && p.duration != androidx.media3.common.C.TIME_UNSET) {
+                        p.seekTo(p.duration * progress.toLong() / 1000)
+                    }
+                }
+            })
+        }
+        root.addView(seekBar)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER }
         fun control(label: String, action: () -> Unit) = Button(this).apply { text = label; setOnClickListener { action() } }.also {
             controls.addView(it, LinearLayout.LayoutParams(0, -2, 1f))
@@ -86,6 +113,32 @@ class MainActivity : ComponentActivity() {
         playButton = control("Play") { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
         control("Next") { controller?.seekToNextMediaItem() }
         root.addView(controls)
+        val options = LinearLayout(this).apply { gravity = Gravity.CENTER }
+        shuffleButton = Button(this).apply {
+            text = "Shuffle off"
+            setOnClickListener {
+                controller?.let { player ->
+                    player.shuffleModeEnabled = !player.shuffleModeEnabled
+                    updateNowPlaying()
+                }
+            }
+        }
+        repeatButton = Button(this).apply {
+            text = "Repeat off"
+            setOnClickListener {
+                controller?.let { player ->
+                    player.repeatMode = when (player.repeatMode) {
+                        Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                        Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                        else -> Player.REPEAT_MODE_OFF
+                    }
+                    updateNowPlaying()
+                }
+            }
+        }
+        options.addView(shuffleButton, LinearLayout.LayoutParams(0, -2, 1f))
+        options.addView(repeatButton, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(options)
         setContentView(root)
         search.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -161,9 +214,25 @@ class MainActivity : ComponentActivity() {
         nowPlaying.text = if (player?.currentMediaItem == null) "Choose a song"
             else "${player.mediaMetadata.title ?: "Untitled"} · ${player.mediaMetadata.artist ?: "Unknown artist"}"
         playButton.text = if (player?.isPlaying == true) "Pause" else "Play"
+        shuffleButton.text = if (player?.shuffleModeEnabled == true) "Shuffle on" else "Shuffle off"
+        repeatButton.text = when (player?.repeatMode) {
+            Player.REPEAT_MODE_ALL -> "Repeat all"
+            Player.REPEAT_MODE_ONE -> "Repeat one"
+            else -> "Repeat off"
+        }
+    }
+
+    private fun updateProgress() {
+        val p = controller ?: return
+        val duration = p.duration.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET } ?: 0L
+        val position = p.currentPosition.coerceAtLeast(0L)
+        seekBar.progress = if (duration > 0) (position.coerceAtMost(duration) * 1000 / duration).toInt() else 0
+        fun clock(ms: Long) = "${ms / 60000}:${((ms / 1000) % 60).toString().padStart(2, '0')}"
+        progressLabel.text = "${clock(position)} / ${clock(duration)}"
     }
 
     override fun onDestroy() {
+        handler.removeCallbacks(progressUpdater)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         super.onDestroy()
     }
